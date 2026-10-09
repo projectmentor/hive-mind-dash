@@ -8,3 +8,7 @@ The HiveMind dashboard as a module. This repository is new and has no code yet; 
 - **Owner actions are signed outside the dashboard.** The owner passphrase never enters the dashboard process.
 
 Extraction from [hive-mind](https://github.com/projectmentor/hive-mind) `dashboard/` is part of the 3.1 core split (hive-mind#293), on the module contract in hive-mind#294.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
