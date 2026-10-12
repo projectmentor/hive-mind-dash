@@ -3,9 +3,20 @@
 The HiveMind dashboard as a module: one place to see your hive, your devices and your modules, and to set them up
 without the command line.
 
-**Status: planned, no code yet.** hdash work is deferred until after 3.0. Today the dashboard is part of
-[hive-mind](https://github.com/projectmentor/hive-mind) itself: run `hv dash` to open it, read-only, in your browser.
-The design is tracked on [hive-mind#298](https://github.com/projectmentor/hive-mind/issues/298).
+**Status: 0.1, the dashboard moved as it is.** `hdash` is the dashboard that used to ship inside
+[hive-mind](https://github.com/projectmentor/hive-mind), unchanged, now a module (manifest contract 1, hive-mind 3.1).
+`hv dash` forwards to it in 3.1 and goes in 4.0. The declarative UI slots and the install wizard below are still
+planned; the design is tracked on [hive-mind#298](https://github.com/projectmentor/hive-mind/issues/298).
+
+```
+hive-mind module install hdash --from <this repo> --publisher <key>   # the installer does this on every node
+hv dash                                                              # or: hdash dash
+```
+
+It is read-only. `hdash serve` listens on `127.0.0.1` (config key `port`, default 9896), answers GET only and only
+for the loopback Host, and maps the page's `/api/*` reads to the core's signed `/v1` routes (overview, tags, related,
+audit, peers, verify, search, item) or, for status, telemetry, entities and a peer's `?node=` view, to the sync
+daemon's loopback `/api/*`. `/v1/search` and `/v1/item` leave out facts the owner forgot, which the old page showed.
 
 ## What it will do
 

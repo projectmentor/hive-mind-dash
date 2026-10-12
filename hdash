@@ -1,0 +1,264 @@
+#!/usr/bin/env python3
+"""hdash: the HiveMind dashboard as a module (extracted unchanged from hive-mind's `dashboard/`).
+
+  hdash serve        the module service: a loopback HTTP server for the dashboard page and its `/api/*` reads
+  hdash dash [--print]   print the dashboard URL and open it in a browser (what `hv dash` forwards to)
+
+`serve` answers GET only, on 127.0.0.1, for a request whose Host is the loopback address it is bound to.
+The page's `/api/*` calls are mapped to the core's read routes:
+
+  overview, tags, related, audit, peers, verify, search, item   -> signed `GET /v1/<route>` (the module API;
+                                                                     the manifest's `reads` names them)
+  status, telemetry, entities, and any call with `?node=<peer>` -> the sync daemon's loopback `/api/<route>`
+                                                                     (which also does the signed per-node proxy)
+
+Nothing is written to the hive and no owner key is touched. Standard library only; the core's module client is
+imported from the core checkout (`HIVE_HOME`) so there is one Ed25519 in the system.
+"""
+
+import argparse
+import base64
+import json
+import os
+import shutil
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlencode, urlparse
+
+BIND = "127.0.0.1"
+PORT_DEFAULT = 9896            # config key `port`; the sync daemon is 9876 and the module API 9886
+DAEMON_PORT_DEFAULT = 9876
+DEFAULT_HIVE_HOME = "~/projects/hive-mind"
+MAX_CONCURRENT = 8
+CSP = "default-src 'self'"
+HERE = Path(__file__).resolve().parent
+STATIC = {
+    "index.html": "text/html; charset=utf-8",
+    "app.js": "text/javascript; charset=utf-8",
+    "app.css": "text/css; charset=utf-8",
+    "logo.svg": "image/svg+xml",
+    "favicon.svg": "image/svg+xml",
+}
+PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.html", "/dashboard/": "index.html",
+         "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css"}
+V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
+DAEMON_ONLY = ("status", "telemetry", "entities")
+API_ROUTES = V1_READS + DAEMON_ONLY
+
+
+def hive_home():
+    return Path(os.environ.get("HIVE_HOME") or DEFAULT_HIVE_HOME).expanduser()
+
+
+def module_dir():
+    return Path(os.environ.get("HIVE_MODULE_DIR") or HERE)
+
+
+def load_port(path=None):
+    """The `port` config key (a per-node JSON file the core keeps), else the default. A bad value is the default."""
+    try:
+        have = json.loads((path or module_dir() / "config").read_text())
+        port = int(have["port"])
+        if 1024 <= port <= 65535:
+            return port
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return PORT_DEFAULT
+
+
+def daemon_port():
+    try:
+        return int(json.loads((hive_home() / ".peers.json").read_text()).get("port", DAEMON_PORT_DEFAULT))
+    except (OSError, ValueError, TypeError):
+        return DAEMON_PORT_DEFAULT
+
+
+def make_v1_client():
+    """A `hive_module_client.ModuleClient` for this module's admitted device key (as hwatch does)."""
+    home = hive_home()
+    if not (home / "hive_module_client.py").is_file():
+        raise RuntimeError(f"no hive-mind core at {home} (no hive_module_client.py): set HIVE_HOME")
+    key_dir = os.environ.get("HIVE_MODULE_KEY_DIR")
+    if not key_dir:
+        raise RuntimeError("HIVE_MODULE_KEY_DIR is not set: run hdash as an installed module")
+    try:
+        seed = base64.b64decode((Path(key_dir) / "device-key").read_text().strip(), validate=True)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(f"cannot read the module key in {key_dir}: {e}") from e
+    if len(seed) != 32:
+        raise RuntimeError(f"the module key in {key_dir} is not a 32-byte seed")
+    if str(home) not in sys.path:
+        sys.path.insert(0, str(home))
+    import hive_module_client
+    port = os.environ.get("HIVE_MODULE_PORT")
+    return hive_module_client.ModuleClient(seed, port=int(port)) if port else hive_module_client.ModuleClient(seed)
+
+
+def daemon_get(path, query, port, timeout=30):
+    """GET the sync daemon's loopback `/api/*`: (status, parsed JSON). The daemon does the per-node proxy."""
+    url = f"http://127.0.0.1:{port}{path}" + (f"?{query}" if query else "")
+    req = urllib.request.Request(url, headers={"Host": f"127.0.0.1:{port}"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read())
+        except ValueError:
+            return e.code, {"error": "daemon error"}
+
+
+class Gateway:
+    """Maps one dashboard `/api/<route>` call to the core. `v1` is a callable (path, query) -> (status, obj),
+    `daemon` the same for the daemon's `/api/*`. Both are injected so tests need no live core."""
+
+    def __init__(self, v1, daemon):
+        self.v1, self.daemon = v1, daemon
+
+    def route(self, name, query):
+        qs = parse_qs(query)
+        if name in V1_READS and not qs.get("node", [""])[0]:
+            if name == "item":                       # /api/item takes `sid`, /v1/item takes `id`
+                query = urlencode({"id": qs.get("sid", [""])[0]})
+            try:
+                return self.v1(f"/v1/{name}", query)
+            except Exception as e:
+                return 502, {"error": f"module API unavailable: {e}"}
+        try:
+            return self.daemon(f"/api/{name}", query)
+        except Exception as e:
+            return 502, {"error": f"sync daemon unavailable: {e}"}
+
+
+def make_handler(gateway, port):
+    allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    slots = __import__("threading").BoundedSemaphore(MAX_CONCURRENT)
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "hdash"
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body, ctype="application/json", extra=()):
+            data = body if isinstance(body, bytes) else json.dumps(body).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Cache-Control", "no-store")
+            for k, v in extra:
+                self.send_header(k, v)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(data)
+
+        def _refuse(self, code, msg):
+            self._send(code, {"error": msg}, extra=(("Allow", "GET, HEAD"),) if code == 405 else ())
+
+        def _serve(self):
+            if (self.headers.get("Host") or "").lower() not in allowed:
+                return self._refuse(403, "forbidden host")          # DNS rebinding: only the loopback name
+            u = urlparse(self.path)
+            if u.path in PAGES:
+                name = PAGES[u.path]
+                try:
+                    body = (HERE / "dashboard" / name).read_bytes()
+                except OSError:
+                    return self._refuse(404, "dashboard asset missing")
+                extra = (("Content-Security-Policy", CSP),) if name == "index.html" else ()
+                return self._send(200, body, STATIC[name], extra)
+            if u.path.startswith("/api/") and u.path[5:] in API_ROUTES:
+                code, obj = gateway.route(u.path[5:], u.query)
+                return self._send(code, obj)
+            self._refuse(404, "not found")
+
+        def _guarded(self):
+            if not slots.acquire(blocking=False):
+                return self._refuse(503, "server busy")
+            try:
+                self._serve()
+            except Exception as e:  # never crash the handler thread
+                self._refuse(500, str(e))
+            finally:
+                slots.release()
+
+        do_GET = do_HEAD = _guarded
+
+        def _no(self):
+            self._refuse(405, "read only")
+
+        do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _no
+
+    return Handler
+
+
+def make_server(gateway, port):
+    return ThreadingHTTPServer((BIND, port), make_handler(gateway, port))
+
+
+def cmd_serve(args):
+    port = load_port()
+    try:
+        client = make_v1_client()
+    except RuntimeError as e:
+        print(f"hdash: {e}", file=sys.stderr)
+        return 1
+    dport = daemon_port()
+    gateway = Gateway(lambda p, q: client.request("GET", p, q),
+                      lambda p, q: daemon_get(p, q, dport))
+    srv = make_server(gateway, port)
+    print(f"hdash: serving http://127.0.0.1:{port}/", flush=True)
+    try:
+        srv.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def cmd_dash(args):
+    port = load_port()
+    local = f"http://127.0.0.1:{port}/"
+    up = False
+    try:
+        urllib.request.urlopen(local + "app.css", timeout=2).close()
+        up = True
+    except Exception:
+        pass
+    print("HiveMind dashboard")
+    print(f"  Local:    {local}")
+    if not up:
+        print("\n  ⚠ The hdash service isn't answering on this port — the dashboard won't load yet.")
+        print("    Check it with `hive-mind module status hdash`, then retry `hv dash`.")
+        return 1
+    if args.print_only:
+        return 0
+    opener = next(([c] for c in ("termux-open-url", "xdg-open", "open") if shutil.which(c)), None)
+    if opener:
+        try:
+            subprocess.Popen(opener + [local], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            print("\n  Opening in your browser…")
+            return 0
+        except OSError:
+            pass
+    print("\n  (Couldn't auto-open a browser — open the Local URL above.)")
+    return 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(prog="hdash", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("serve", help="run the dashboard service (the module unit does this)")
+    d = sub.add_parser("dash", help="print the dashboard URL and open it in a browser")
+    d.add_argument("--print", dest="print_only", action="store_true", help="print the URL only; do not open a browser")
+    args = p.parse_args(argv)
+    return {"serve": cmd_serve, "dash": cmd_dash}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

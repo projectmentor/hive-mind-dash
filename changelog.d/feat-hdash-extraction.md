@@ -1,0 +1,1 @@
+- hdash 0.1: the HiveMind dashboard as a module, extracted unchanged from hive-mind's `dashboard/`. `hdash serve` is a loopback service that serves the page and maps its `/api/*` reads to the core's signed `/v1` routes (or to the sync daemon for status, telemetry, entities and per-node views); `hdash dash` opens it. Read only.
