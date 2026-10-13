@@ -39,6 +39,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -580,7 +581,7 @@ def settings_view(query):
                  "warnings": [clean_text(w, 300) for w in warns[:20]]}
 
 
-_write_lock = __import__("threading").Lock()     # one settings write at a time (hconfig also holds its own flock)
+_write_lock = threading.Lock()     # one settings write at a time (hconfig also holds its own flock)
 
 
 def write_setting(obj):
@@ -686,7 +687,7 @@ def make_handler(gateway, port, csrf_token=None, launch_token=None):
     origins = {f"http://{h}" for h in allowed}
     token = csrf_token or secrets.token_urlsafe(32)
     launch = launch_token or secrets.token_urlsafe(32)
-    slots = __import__("threading").BoundedSemaphore(MAX_CONCURRENT)
+    slots = threading.BoundedSemaphore(MAX_CONCURRENT)
 
     class Handler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -817,6 +818,666 @@ def make_server(gateway, port, launch_token=None):
     return ThreadingHTTPServer((BIND, port), make_handler(gateway, port, launch_token=launch_token))
 
 
+# ── viewer mode (4.x P4): a read-only listener for allowlisted tailnet logins ─────────────────────────────────────────
+# Design: hive-mind-private docs/design/dashboard-tailnet-access.md. The listener is a class of its own (`make_viewer_handler`)
+# with one authorization path, the viewer gate; it never consults a source address, so a request from 127.0.0.1 (every
+# request that arrives through `tailscale serve`) grants nothing by itself. It shares no budget with the operator listener.
+
+VIEWER_PORT_DEFAULT = 9906       # clear of 9876-9880 (daemon + fallback range), 9886 (module API) and 9896 (operator port)
+MODULE_API_PORT_DEFAULT = 9886
+SERVE_HTTPS_PORT = 8443          # a dedicated Serve port, so sharing never overwrites another `tailscale serve` entry
+LOGIN_HEADER = "Tailscale-User-Login"
+FUNNEL_HEADER = "Tailscale-Funnel-Request"
+VIEWER_SIGNATURE = {"listener": "viewer"}     # in every refusal; `share` and doctor probe for it
+VIEWER_PAGES = ("/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/app.js", "/app.css")
+VIEWER_RECORDS_PATH = "/api/config/records"
+VIEWER_ROUTES = {        # route -> the query parameters it takes; anything else (`node` above all) is a 403
+    "overview": (), "tags": (), "audit": (), "verify": (), "peers": (),
+    "search": ("q", "tag", "kind", "min_confidence", "limit", "offset", "sort", "status"),
+    "related": ("kind", "id"), "item": ("sid",),
+}
+VIEWER_PARAM_MAX = 512
+LOGIN_MAX = 256
+VIEWER_SLOTS = 4                 # concurrent requests the viewer listener works on (the operator's is MAX_CONCURRENT)
+VIEWER_MAX_CONNS = 32
+VIEWER_RATE = (30, 3.0)          # per login: burst, then requests per second; unidentified traffic shares one key
+VIEWER_UPSTREAM = (12, 2.0)      # all viewers together: burst, then calls per second hdash makes to the core for them
+VIEWER_UPSTREAM_WAIT = 3.0
+VIEWER_CACHE_TTL, VIEWER_CACHE_MAX = 5.0, 64
+VIEWER_POLL = 2.0                # seconds between looks at the node config (share on/off, port)
+VIEWER_TIMEOUT = 10
+NO_LOGIN = "\x00none"            # the rate key of a request with no (or a malformed) login header
+VIEWER_RECORD_FIELDS = ("id", "class", "type", "default", "values", "min", "max", "description", "value", "source")
+
+
+def peers_file():
+    return hive_home() / ".peers.json"
+
+
+def viewer_settings(path=None):
+    """`dashboard_share`, `dashboard_viewers` and `dashboard_viewer_port` from the node file, which `hv config node set`
+    writes. Never raises: a missing, unreadable or mistyped file or port means sharing is off. Logins are lowercased."""
+    try:
+        cfg = json.loads(Path(path or peers_file()).read_text())
+    except (OSError, ValueError):
+        cfg = None
+    cfg = cfg if isinstance(cfg, dict) else {}
+    port = cfg.get("dashboard_viewer_port")
+    valid = isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535
+    viewers = cfg.get("dashboard_viewers")
+    viewers = sorted({v.lower() for v in viewers if isinstance(v, str) and 0 < len(v) <= LOGIN_MAX}) if isinstance(viewers, list) else []
+    return {"share": cfg.get("dashboard_share") is True and (valid or port is None), "port": port if valid else VIEWER_PORT_DEFAULT,
+            "port_set": valid, "viewers": viewers}
+
+
+class SettingsCache:
+    """`viewer_settings`, re-read only when the file changes, so an allowlist edit or `unshare` bites on the next request."""
+
+    def __init__(self, path_fn=peers_file, reader=viewer_settings):
+        self.path_fn, self.reader, self.sig, self.val = path_fn, reader, None, None
+        self.lock = threading.Lock()
+
+    def get(self):
+        path = self.path_fn()
+        try:
+            st = os.stat(path)
+            sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except OSError:
+            sig = None
+        with self.lock:
+            if self.val is None or sig != self.sig:
+                self.val, self.sig = self.reader(path), sig
+            return self.val
+
+
+def module_api_port():
+    try:
+        return int(os.environ.get("HIVE_MODULE_PORT") or MODULE_API_PORT_DEFAULT)
+    except ValueError:
+        return MODULE_API_PORT_DEFAULT
+
+
+def viewer_port_problem(port, operator_port, daemon_live=None, module_api=None):
+    """Why `port` must not be the viewer listener's (it is, or may be, a full-trust loopback listener), else None. The daemon
+    falls back through `range(base, base + 5)` when its base port is squatted, so its live port can be any of them."""
+    daemon_live = daemon_port() if daemon_live is None else daemon_live
+    module_api = module_api_port() if module_api is None else module_api
+    if not 1024 <= port <= 65535:
+        return f"port {port} is outside 1024-65535"
+    if port == operator_port:
+        return f"port {port} is hdash's own operator port"
+    if port == daemon_live:
+        return f"port {port} is the sync daemon's live port"
+    for base in sorted({DAEMON_PORT_DEFAULT, daemon_live}):
+        if base <= port < base + 5:
+            return f"port {port} is inside the daemon's fallback range {base}-{base + 4}"
+    if port == module_api:
+        return f"port {port} is the module API's port"
+    return None
+
+
+class Bucket:
+    """A token bucket: `burst` tokens, refilled at `rate` per second."""
+
+    def __init__(self, burst, rate, clock=time.monotonic):
+        self.burst, self.rate, self.clock = burst, rate, clock
+        self.tokens, self.at = float(burst), clock()
+
+    def take(self):
+        now = self.clock()
+        self.tokens = min(self.burst, self.tokens + (now - self.at) * self.rate)
+        self.at = now
+        if self.tokens >= 1:
+            self.tokens -= 1
+            return True
+        return False
+
+
+class KeyedLimiter:
+    """One `Bucket` per key, at most `max_keys` of them (the rest share one), under a lock."""
+
+    def __init__(self, burst, rate, max_keys=256, clock=time.monotonic):
+        self.burst, self.rate, self.max_keys, self.clock = burst, rate, max_keys, clock
+        self.buckets, self.lock = {}, threading.Lock()
+
+    def allow(self, key):
+        with self.lock:
+            if key not in self.buckets and len(self.buckets) >= self.max_keys:
+                key = "\x00overflow"
+            b = self.buckets.get(key)
+            if b is None:
+                b = self.buckets[key] = Bucket(self.burst, self.rate, self.clock)
+            return b.take()
+
+
+def viewer_login(headers):
+    """The one `Tailscale-User-Login`, lowercased, or None when it is absent, repeated, empty, over-long or has
+    whitespace or control characters. A tagged device and Funnel traffic carry none."""
+    values = headers.get_all(LOGIN_HEADER) or []
+    if len(values) != 1:
+        return None
+    v = values[0].strip()
+    if not v or len(v) > LOGIN_MAX or any(c.isspace() or unicodedata.category(c) in ("Cc", "Cf") for c in v):
+        return None
+    return v.lower()
+
+
+def viewer_query(route, query):
+    """The sanitized query string for a viewer read, or None to refuse. Only the route's own parameters pass, each once with
+    a bounded value, so `node=` (the per-node view) can never reach the core. `/api/peers` is always `probe=0`."""
+    if route == "peers":
+        return "probe=0"
+    try:
+        qs = parse_qs(query, keep_blank_values=True, strict_parsing=False, max_num_fields=16)
+    except ValueError:
+        return None
+    clean = []
+    for k, vals in qs.items():
+        if k not in VIEWER_ROUTES[route] or len(vals) != 1 or len(vals[0]) > VIEWER_PARAM_MAX:
+            return None
+        clean.append((k, vals[0]))
+    return urlencode(sorted(clean))
+
+
+def viewer_record(rec):
+    """One hconfig record as a viewer may see it, or None. A governed value whose key is not `identifying`, or a non-secret module
+    value hconfig labels `viewer` (its panel has `viewer: true`). Never a `node:` key, a secret, an identifying value; only the
+    fields in VIEWER_RECORD_FIELDS, so `set_by`, `write_via`, `warnings`, `env` and the writer never leave. A record missing
+    `secret` or `identifying` is refused (fail closed)."""
+    if not isinstance(rec, dict) or not isinstance(rec.get("id"), str) or rec["id"].startswith("node:"):
+        return None
+    if rec.get("class") not in ("governed", "module") or rec.get("visibility") != "viewer":
+        return None
+    if rec.get("secret") is not False or rec.get("identifying") is not False:
+        return None
+    out = {}
+    for k in VIEWER_RECORD_FIELDS:
+        if k in rec:
+            out[k] = clean_text(rec[k], 100) if k == "id" else (
+                [clean_text(x, 100) for x in rec[k][:100]] if k == "values" and isinstance(rec[k], list) else
+                clean_text(rec[k], 400) if k in ("description", "source", "type", "class") and isinstance(rec[k], str) else
+                _value_view(rec[k]) if k in ("default", "value", "min", "max") else None)
+    return out
+
+
+def viewer_records():
+    """`GET /api/config/records`: the viewer-visible hconfig records (this node), nothing else from hconfig."""
+    try:
+        rc, doc = run_hconfig(["list", "--json"])
+    except RuntimeError:
+        return 502, {"error": "settings unavailable"}
+    if rc != 0 or doc.get("ok") is not True or not isinstance(doc.get("keys"), list):
+        return 502, {"error": "settings unavailable"}
+    return 200, {"schema": 1, "keys": [r for r in map(viewer_record, doc["keys"]) if r]}
+
+
+class ViewerBackend:
+    """What the viewer listener answers from: the operator's `Gateway` (hdash's own fetches), behind a short cache, one
+    upstream call at a time and its own call budget, so a viewer flood cannot reach the daemon's 127.0.0.1 bucket or its
+    32 slots faster than that budget. An upstream error is a bare status: no path, port or exception text reaches a viewer."""
+
+    def __init__(self, gateway, records=viewer_records, ttl=VIEWER_CACHE_TTL, clock=time.monotonic):
+        self.gateway, self.records, self.ttl, self.clock = gateway, records, ttl, clock
+        self.cache, self.cache_lock, self.upstream = {}, threading.Lock(), threading.Lock()
+        self.budget = Bucket(*VIEWER_UPSTREAM, clock=clock)
+        self.calls = 0                       # upstream calls made on viewers' behalf (tests read it)
+
+    def _cached(self, key):
+        with self.cache_lock:
+            hit = self.cache.get(key)
+            return hit[1:] if hit and hit[0] > self.clock() else None
+
+    def _store(self, key, code, obj):
+        with self.cache_lock:
+            now = self.clock()
+            for k in [k for k, v in self.cache.items() if v[0] <= now]:
+                del self.cache[k]
+            while len(self.cache) >= VIEWER_CACHE_MAX:
+                del self.cache[min(self.cache, key=lambda k: self.cache[k][0])]
+            self.cache[key] = (now + self.ttl, code, obj)
+
+    def get(self, route, query=""):
+        key = (route, query)
+        hit = self._cached(key)
+        if hit:
+            return hit
+        if not self.upstream.acquire(timeout=VIEWER_UPSTREAM_WAIT):
+            return 503, {"error": "busy"}
+        try:
+            hit = self._cached(key)                  # another viewer may have filled it while this one waited
+            if hit:
+                return hit
+            if not self.budget.take():
+                return 429, {"error": "busy"}
+            self.calls += 1
+            try:
+                code, obj = self.records() if route == "config/records" else self.gateway.route(route, query)
+            except Exception:
+                code, obj = 502, None
+            if code != 200 or not isinstance(obj, (dict, list)):
+                code, obj = (code if code in (400, 404, 429, 502, 503) else 502), {"error": "unavailable"}
+            self._store(key, code, obj)
+            return code, obj
+        finally:
+            self.upstream.release()
+
+
+def make_viewer_handler(backend, settings, limiter=None, slots=None):
+    """The viewer listener's handler. Its single gate, for every request: take a slot (503), charge the per-login rate (429), then
+    require sharing on, exactly one `Tailscale-User-Login` on the allowlist (case-insensitive), no Funnel marker, method GET, no
+    body and a path in the read-only subset (403 for each). The 403 body is `{"listener": "viewer"}`. There is no POST handler,
+    and nothing here reads the source address: a loopback source is not an identity."""
+    limiter = limiter or KeyedLimiter(*VIEWER_RATE)
+    slots = slots or threading.BoundedSemaphore(VIEWER_SLOTS)
+
+    class ViewerHandler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        server_version = "hdash-viewer"
+        timeout = VIEWER_TIMEOUT
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, obj, ctype="application/json", close=False):
+            data = obj if isinstance(obj, bytes) else json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("Cache-Control", "no-store")
+            if ctype.startswith("text/html"):
+                self.send_header("Content-Security-Policy", CSP)
+            if close:
+                self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _refuse(self, code, msg):
+            self.close_connection = True                 # a body we never read must not be parsed as the next request
+            self._send(code, {**VIEWER_SIGNATURE, "error": msg}, close=True)
+
+        def _handle(self):
+            if not slots.acquire(blocking=False):
+                return self._refuse(503, "server busy")
+            try:
+                login = viewer_login(self.headers)
+                if not limiter.allow(login or NO_LOGIN):          # charged before any refusal below
+                    return self._refuse(429, "rate limited")
+                cfg = settings.get()
+                if not (cfg["share"] and login in cfg["viewers"]) or self.headers.get(FUNNEL_HEADER) is not None:
+                    return self._refuse(403, "forbidden")
+                if self.command != "GET" or self.headers.get("Content-Length") or self.headers.get("Transfer-Encoding"):
+                    return self._refuse(403, "forbidden")
+                u = urlparse(self.path)
+                if u.path in VIEWER_PAGES:
+                    name = PAGES[u.path]
+                    try:
+                        body = (HERE / "dashboard" / name).read_bytes()
+                    except OSError:
+                        return self._refuse(403, "forbidden")
+                    return self._send(200, body, STATIC[name])
+                if u.path == VIEWER_RECORDS_PATH:
+                    code, obj = backend.get("config/records")
+                elif u.path.startswith("/api/") and u.path[5:] in VIEWER_ROUTES:
+                    q = viewer_query(u.path[5:], u.query)
+                    if q is None:
+                        return self._refuse(403, "forbidden")
+                    code, obj = backend.get(u.path[5:], q)
+                else:
+                    return self._refuse(403, "forbidden")
+                self._send(code, obj)
+            except Exception:                            # never crash the handler thread, never echo the cause
+                self._refuse(500, "error")
+            finally:
+                slots.release()
+
+        do_GET = do_HEAD = do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _handle
+
+    return ViewerHandler
+
+
+class ViewerServer(ThreadingHTTPServer):
+    """Loopback only, with a cap on open connections (a slow client holds a thread, not the listener)."""
+    daemon_threads = True
+
+    def __init__(self, port, handler, max_conns=VIEWER_MAX_CONNS):
+        self.conns = threading.BoundedSemaphore(max_conns)
+        super().__init__((BIND, port), handler)
+
+    def process_request(self, request, client_address):
+        if not self.conns.acquire(blocking=False):
+            return self.shutdown_request(request)
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.conns.release()
+
+
+class ViewerManager:
+    """Owns the viewer listener for this hdash process: binds it when the node config says share on (and the port is safe),
+    stops it when the config says off or the port changes, and never falls back to another port. A port that is taken or
+    unsafe leaves sharing off and is reported in `error`; doctor warns. hdash stopping stops it (it is hdash's thread)."""
+
+    def __init__(self, backend, operator_port, settings=None, log=None, make=ViewerServer):
+        self.backend, self.operator_port = backend, operator_port
+        self.settings = settings or SettingsCache()
+        self.log, self.make = log or (lambda m: print(m, file=sys.stderr, flush=True)), make
+        self.handler = make_viewer_handler(backend, self.settings)
+        self.server = self.thread = None
+        self.port = None
+        self.error = None
+        self.stopping = threading.Event()
+
+    def reconcile(self):
+        cfg = self.settings.get()
+        if self.server and (not cfg["share"] or cfg["port"] != self.port):
+            self.stop_listener()
+        if not cfg["share"] or self.server:
+            self.error = None if not cfg["share"] else self.error
+            return
+        problem = viewer_port_problem(cfg["port"], self.operator_port)
+        if problem is None:
+            try:
+                self.server = self.make(cfg["port"], self.handler)
+            except OSError as e:
+                problem = f"cannot bind 127.0.0.1:{cfg['port']}: {e.strerror or type(e).__name__}"
+        if problem is not None:
+            if problem != self.error:
+                self.log(f"hdash: viewer listener off: {problem}")
+            self.error = problem
+            return
+        self.error, self.port = None, cfg["port"]
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.log(f"hdash: viewer listener on 127.0.0.1:{self.port} (read-only, {len(cfg['viewers'])} login(s))")
+
+    def stop_listener(self):
+        srv, self.server, self.port = self.server, None, None
+        if srv:
+            srv.shutdown()
+            srv.server_close()
+            self.log("hdash: viewer listener off")
+
+    def run(self, interval=VIEWER_POLL):
+        while not self.stopping.is_set():
+            try:
+                self.reconcile()
+            except Exception as e:
+                self.log(f"hdash: viewer reconcile failed: {type(e).__name__}")
+            self.stopping.wait(interval)
+        self.stop_listener()
+
+    def stop(self):
+        self.stopping.set()
+        self.stop_listener()
+
+
+def probe_viewer(port, timeout=3):
+    """What answers an unauthenticated GET on 127.0.0.1:<port>: ("viewer", "") when it is the viewer listener's signature
+    reply (403 with {"listener": "viewer"}), ("other", detail) for anything else (an operator listener answers the dashboard
+    page 200 to a loopback caller), ("down", detail) when nothing answers. This is the load-bearing check."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k):
+            return None
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/", headers={"Host": f"127.0.0.1:{port}"})
+    try:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=timeout) as r:
+            return "other", f"answered {r.status}"
+    except urllib.error.HTTPError as e:
+        try:
+            doc = json.loads(e.read(4096))
+        except ValueError:
+            doc = None
+        if e.code == 403 and isinstance(doc, dict) and doc.get("listener") == "viewer":
+            return "viewer", ""
+        return "other", f"answered {e.code}"
+    except (OSError, ValueError) as e:
+        return "down", type(e).__name__
+
+
+def tailscale(args, timeout=20):
+    """Run the `tailscale` CLI (argv, no shell): (exit code, stdout, stderr). RuntimeError when it is absent or hangs."""
+    exe = shutil.which("tailscale")
+    if not exe:
+        raise RuntimeError("the tailscale command is not installed on this node")
+    try:
+        p = subprocess.run([exe] + list(args), capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"tailscale did not answer: {type(e).__name__}") from e
+    return p.returncode, p.stdout, p.stderr
+
+
+def tailscale_json(args):
+    rc, out, err = tailscale(args)
+    if rc != 0:
+        raise RuntimeError(f"tailscale {' '.join(args[:2])} failed: {clean_text(err or out or f'exit {rc}', 200)}")
+    try:
+        doc = json.loads(out or "{}")
+    except ValueError as e:
+        raise RuntimeError("tailscale printed something that is not JSON") from e
+    if not isinstance(doc, dict):
+        raise RuntimeError("tailscale printed something that is not an object")
+    return doc
+
+
+def front_end(serve_status, https_port=SERVE_HTTPS_PORT):
+    """What `tailscale serve status --json` says about our HTTPS port: {served, targets: [(path, proxy)], other, funnel}. `other`
+    is a handler that is not a plain proxy (static text or a path), `funnel` that the front end is public (Funnel is per Serve
+    HTTPS port, so the port is the thing to inspect, not the backend)."""
+    suffix = f":{https_port}"
+    dicts = lambda k: serve_status.get(k) if isinstance(serve_status.get(k), dict) else {}
+    out = {"served": str(https_port) in dicts("TCP"), "targets": [], "other": False,
+           "funnel": any(v is True and str(k).endswith(suffix) for k, v in dicts("AllowFunnel").items())}
+    for host, ent in dicts("Web").items():
+        if not str(host).endswith(suffix):
+            continue
+        out["served"] = True
+        handlers = ent.get("Handlers") if isinstance(ent, dict) and isinstance(ent.get("Handlers"), dict) else {}
+        out["other"] = out["other"] or not handlers
+        for path, h in handlers.items():
+            prox = h.get("Proxy") if isinstance(h, dict) else None
+            if isinstance(prox, str):
+                out["targets"].append((path, prox.rstrip("/")))
+            else:
+                out["other"] = True
+    return out
+
+
+def serves_viewer(fe, port):
+    """True when the front end is exactly one proxy of `/` to the viewer listener."""
+    return fe["served"] and not fe["other"] and fe["targets"] == [("/", f"http://127.0.0.1:{port}")]
+
+
+def tailnet_identity(status):
+    """(login, DNS name) of this device from `tailscale status --json`; either may be ''."""
+    me = status.get("Self") if isinstance(status.get("Self"), dict) else {}
+    users = status.get("User") if isinstance(status.get("User"), dict) else {}
+    user = users.get(str(me.get("UserID")))
+    login = user.get("LoginName") if isinstance(user, dict) else ""
+    return (login.lower() if isinstance(login, str) else ""), str(me.get("DNSName") or "").rstrip(".")
+
+
+def hv_argv():
+    exe = shutil.which("hv")
+    return [exe] if exe else [sys.executable, str(hive_home() / "hv")]
+
+
+def config_node_set(key, value, timeout=60):
+    """`hv config node set <key> <value>`: the one writer of the node file. hdash never writes `.peers.json` itself."""
+    try:
+        p = subprocess.run(hv_argv() + ["config", "node", "set", key, value], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"could not run `hv config node set {key}`: {type(e).__name__}") from e
+    if p.returncode != 0:
+        raise RuntimeError(f"`hv config node set {key}` failed: {clean_text(p.stdout or p.stderr, 200)}")
+
+
+def exposure_results(cfg, operator_port, ts=tailscale_json, probe=probe_viewer):
+    """The `dashboard-exposure` doctor rows for node config `cfg`. Fails on a Funnel-enabled 8443 front end, on a Serve target
+    that is not the viewer listener, and on any port that is (or may be) a full-trust listener; warns when sharing is on with
+    no viewer listener bound. Advisory otherwise."""
+    check, port = "dashboard-exposure", cfg["port"]
+    rows = []
+    try:
+        fe = front_end(ts(["serve", "status", "--json"]))
+    except RuntimeError as e:
+        fe = None
+        if cfg["share"]:
+            rows.append({"level": "warn", "check": check, "message": f"cannot read the Serve front end: {clean_text(e, 200)}"})
+    if fe and fe["funnel"]:
+        rows.append({"level": "fail", "check": check, "fix_hint": f"tailscale funnel --https={SERVE_HTTPS_PORT} off",
+                     "message": f"Funnel is on for the HTTPS {SERVE_HTTPS_PORT} front end: the dashboard viewer is reachable from the internet"})
+    if not cfg["share"]:
+        if fe and fe["served"] and any(t[1].endswith(f":{port}") for t in fe["targets"]):
+            rows.append({"level": "warn", "check": check, "fix_hint": "hdash unshare",
+                         "message": f"sharing is off but Serve HTTPS {SERVE_HTTPS_PORT} still points at 127.0.0.1:{port}"})
+        return rows or [{"level": "ok", "check": check, "message": "sharing is off"}]
+    problem = viewer_port_problem(port, operator_port)
+    if problem:
+        rows.append({"level": "fail", "check": check, "message": f"the viewer {problem}", "fix_hint": "hdash share --port <other port>"})
+    state, detail = probe(port)
+    if state == "other":
+        rows.append({"level": "fail", "check": check, "message": f"127.0.0.1:{port} is not the viewer listener ({detail})",
+                     "fix_hint": "hdash unshare; hdash share --port <other port>"})
+    elif state == "down":
+        rows.append({"level": "warn", "check": check, "message": f"sharing is on but nothing listens on 127.0.0.1:{port} (viewers get 502)",
+                     "fix_hint": "the port may be taken; hive-mind module status hdash"})
+    if fe is not None:
+        if fe["served"] and not serves_viewer(fe, port):
+            rows.append({"level": "fail", "check": check, "fix_hint": "hdash unshare",
+                         "message": f"Serve HTTPS {SERVE_HTTPS_PORT} does not point only at the viewer listener 127.0.0.1:{port}: {fe['targets'] or 'a non-proxy handler'}"})
+        elif not fe["served"]:
+            rows.append({"level": "warn", "check": check, "fix_hint": "hdash share",
+                         "message": f"sharing is on but nothing serves HTTPS {SERVE_HTTPS_PORT}"})
+    if not any(r["level"] != "ok" for r in rows):
+        rows.append({"level": "ok", "check": check, "message": f"sharing on for {len(cfg['viewers'])} login(s) via 127.0.0.1:{port}"})
+    return rows
+
+
+def cmd_doctor(args):
+    print(json.dumps({"schema": 1, "results": exposure_results(viewer_settings(), load_port())}))
+    return 0
+
+
+def share(allow=(), port=None, *, ts=tailscale, tsj=tailscale_json, write=config_node_set, read=viewer_settings,
+          probe=probe_viewer, operator_port=None, wait=10.0, sleep=time.sleep, out=print):
+    """`hdash share [--allow LOGIN]... [--port N]`: check, switch the listener on, probe it, and only then point Serve at it.
+    Returns the exit code. Any failing check aborts before the Serve config is touched (a node-config change made on the way is
+    put back)."""
+    operator_port = load_port() if operator_port is None else operator_port
+    cfg = read()
+    port = port or cfg["port"]
+    problem = viewer_port_problem(port, operator_port)
+    if problem:
+        out(f"hdash: refusing to share: {problem}")
+        return 1
+    try:
+        status = tsj(["status", "--json"])
+        fe = front_end(tsj(["serve", "status", "--json"]))
+    except RuntimeError as e:
+        out(f"hdash: {e}")
+        return 1
+    login, dns = tailnet_identity(status)
+    if fe["funnel"]:
+        out(f"hdash: refusing to share: Funnel is on for HTTPS {SERVE_HTTPS_PORT}; turn it off first: tailscale funnel --https={SERVE_HTTPS_PORT} off")
+        return 1
+    ours = serves_viewer(fe, port)
+    if fe["served"] and not ours:
+        out(f"hdash: refusing to share: HTTPS {SERVE_HTTPS_PORT} is already served by something else ({fe['targets'] or 'a non-proxy handler'})")
+        return 1
+    viewers = sorted(set(cfg["viewers"]) | {a.strip().lower() for a in allow if a.strip()} | ({login} if not cfg["viewers"] and login else set()))
+    if not viewers:
+        out("hdash: no login to allow: pass --allow <login> (this device's Tailscale login could not be read)")
+        return 1
+    changed = []
+    try:
+        if viewers != cfg["viewers"]:
+            write("dashboard_viewers", json.dumps(viewers))
+        if port != cfg["port"] or (port != VIEWER_PORT_DEFAULT and not cfg["port_set"]):
+            write("dashboard_viewer_port", str(port))
+            changed.append(("dashboard_viewer_port", cfg["port"] if cfg["port_set"] else None))
+        if not cfg["share"]:
+            write("dashboard_share", "true")
+            changed.append(("dashboard_share", False))
+    except RuntimeError as e:
+        out(f"hdash: {e}")
+        return 1
+    deadline, state, detail = time.monotonic() + wait, "down", ""
+    while True:
+        state, detail = probe(port)
+        if state == "viewer" or time.monotonic() >= deadline:
+            break
+        sleep(0.5)
+    if state != "viewer":
+        why = ("the port answers something other than the viewer listener (" + detail + "): it may be a full-trust listener"
+               if state == "other" else "nothing answered on it; is hdash running? (hive-mind module status hdash)")
+        out(f"hdash: refusing to share: the loopback probe of 127.0.0.1:{port} failed: {why}")
+        for key, old in reversed(changed):
+            try:
+                write(key, "false" if key == "dashboard_share" else str(old if old else VIEWER_PORT_DEFAULT))
+            except RuntimeError:
+                out(f"hdash: could not put {key} back; run `hdash unshare`")
+        return 1
+    if not ours:
+        rc, so, se = ts(["serve", "--bg", f"--https={SERVE_HTTPS_PORT}", f"http://127.0.0.1:{port}"])
+        if rc != 0:
+            out(f"hdash: tailscale serve failed: {clean_text(se or so, 200)}")
+            return 1
+    out(f"Sharing the dashboard read-only with: {', '.join(viewers)}")
+    out(f"  URL: https://{dns or '<this-device>.<tailnet>.ts.net'}:{SERVE_HTTPS_PORT}")
+    return 0
+
+
+def unshare(*, ts=tailscale, tsj=tailscale_json, write=config_node_set, read=viewer_settings, out=print):
+    """`hdash unshare`: turn the 8443 front end off (only when it is ours), then clear `dashboard_share`; the listener stops
+    within a couple of seconds. Returns the exit code."""
+    cfg, rc = read(), 0
+    try:
+        fe = front_end(tsj(["serve", "status", "--json"]))
+    except RuntimeError as e:
+        out(f"hdash: {e}; clearing dashboard_share anyway (check `tailscale serve status`)")
+        fe, rc = None, 1
+    if fe and fe["served"]:
+        if serves_viewer(fe, cfg["port"]):
+            code, so, se = ts(["serve", f"--https={SERVE_HTTPS_PORT}", "off"])
+            if code != 0:
+                out(f"hdash: tailscale serve off failed: {clean_text(se or so, 200)}")
+                rc = 1
+        else:
+            out(f"hdash: HTTPS {SERVE_HTTPS_PORT} is served by something that is not the viewer listener; left alone")
+            rc = 1
+    try:
+        write("dashboard_share", "false")
+    except RuntimeError as e:
+        out(f"hdash: {e}")
+        return 1
+    out("Sharing is off." if rc == 0 else "Sharing is off in the node config; see above.")
+    return rc
+
+
+def viewers_report(*, tsj=tailscale_json, read=viewer_settings, out=print, as_json=False):
+    """`hdash viewers`: the allowlist and the Serve status. A read."""
+    cfg = read()
+    try:
+        fe = front_end(tsj(["serve", "status", "--json"]))
+        serve = ("funnel ON" if fe["funnel"] else "points at the viewer listener" if serves_viewer(fe, cfg["port"])
+                 else "not served" if not fe["served"] else "serves something else")
+    except RuntimeError as e:
+        serve = f"unknown ({clean_text(e, 100)})"
+    if as_json:
+        out(json.dumps({"schema": 1, "share": cfg["share"], "port": cfg["port"], "viewers": cfg["viewers"], "serve": serve}))
+    else:
+        out(f"sharing: {'on' if cfg['share'] else 'off'}   viewer port: 127.0.0.1:{cfg['port']}   Serve HTTPS {SERVE_HTTPS_PORT}: {serve}")
+        for v in cfg["viewers"] or ["(no logins listed)"]:
+            out(f"  {v}")
+    return 0
+
+
 def cmd_serve(args):
     port = load_port()
     try:
@@ -834,10 +1495,14 @@ def cmd_serve(args):
         return 1
     srv = make_server(gateway, port, launch)
     print(f"hdash: serving http://127.0.0.1:{port}/", flush=True)
+    viewer = ViewerManager(ViewerBackend(gateway), port)       # follows this process: bound while `dashboard_share` is on
+    threading.Thread(target=viewer.run, daemon=True).start()
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        viewer.stop()
     return 0
 
 
@@ -883,8 +1548,17 @@ def main(argv=None):
     sub.add_parser("serve", help="run the dashboard service (the module unit does this)")
     d = sub.add_parser("dash", help="print the dashboard URL and open it in a browser")
     d.add_argument("--print", dest="print_only", action="store_true", help="print the URL only; do not open a browser")
+    sh = sub.add_parser("share", help="share the dashboard read-only with tailnet logins")
+    sh.add_argument("--allow", action="append", default=[], metavar="LOGIN", help="add a viewer (default: this device's Tailscale login)")
+    sh.add_argument("--port", type=int, help=f"viewer listener port on 127.0.0.1 (default {VIEWER_PORT_DEFAULT})")
+    sub.add_parser("unshare", help="stop sharing the dashboard")
+    v = sub.add_parser("viewers", help="list the viewer allowlist and the Serve status")
+    v.add_argument("--json", action="store_true")
+    sub.add_parser("doctor", help="the dashboard-exposure check (the module doctor slot runs this)")
     args = p.parse_args(argv)
-    return {"serve": cmd_serve, "dash": cmd_dash}[args.cmd](args)
+    return {"serve": cmd_serve, "dash": cmd_dash, "doctor": cmd_doctor,
+            "share": lambda a: share(a.allow, a.port), "unshare": lambda a: unshare(),
+            "viewers": lambda a: viewers_report(as_json=a.json)}[args.cmd](args)
 
 
 if __name__ == "__main__":

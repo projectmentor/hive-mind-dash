@@ -38,7 +38,28 @@ const put=(el,...nodes)=>{ if(el) el.replaceChildren(...nodes.flatMap(toNodes));
 const safeUrl=(u,fb)=>/^https?:\/\//i.test(String(u||''))?String(u):fb;
 
 const confColor=c=>c>=.6?'var(--ok)':c>=.3?'var(--accent)':'var(--warn)';
-const getJSON=async u=>{const r=await fetch(u);if(!r.ok)throw new Error(r.status);return r.json();};
+/* Viewer mode: a tailnet viewer loads this page over HTTPS from the MagicDNS name, the operator from 127.0.0.1. The page then
+   skips the calls the viewer listener refuses, never sends ?node= and asks for peers with probe=0. This only removes calls: the
+   viewer listener is the gate, and a refusal it sends is shown, not swallowed. */
+const VIEWER=!['127.0.0.1','localhost','[::1]','::1'].includes(location.hostname);
+const VIEWER_NO=['/api/status','/api/telemetry','/api/entities','/api/modules','/api/module','/api/settings','/api/csrf'];
+function viewerUrl(u){
+  const x=new URL(u,location.origin);
+  if(VIEWER_NO.includes(x.pathname)) throw new Error('not available to viewers: '+x.pathname);
+  x.searchParams.delete('node');
+  if(x.pathname==='/api/peers') x.searchParams.set('probe','0');
+  return x.pathname+x.search;
+}
+function viewerRefused(u,body){
+  const n=document.getElementById('vnote'); if(!n) return;
+  n.hidden=false; n.textContent='The viewer listener refused '+u.split('?')[0]+(body&&body.error?': '+body.error:'')+'.';
+}
+const getJSON=async u=>{
+  if(VIEWER) u=viewerUrl(u);
+  const r=await fetch(u);
+  if(!r.ok){ if(VIEWER){ let b=null; try{b=await r.json();}catch(e){} if(b&&b.listener==='viewer') viewerRefused(u,b); } throw new Error(r.status); }
+  return r.json();
+};
 const spin=t=>html`<div class="loading"><span class="spin"></span> ${t||'loading…'}</div>`;
 const empty=t=>html`<div class="empty">${t}</div>`;
 const fmtDur=s=>{s=Math.round(s||0);const h=(s/3600)|0,m=((s%3600)/60)|0;return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;};
@@ -53,10 +74,11 @@ const setNav=v=>document.querySelectorAll('nav button').forEach(x=>x.classList.t
   try{ META=await getJSON('/api/overview'); }catch(e){ put($('#app'),empty('could not reach /api/overview — is the daemon running?')); return; }
   $('#hRole').textContent=META.role; $('#hRole').className='badge link '+(META.role==='OWNER'?'owner':'');
   $('#hAuth').textContent='checking…'; $('#hNode').textContent=META.node; $('#hMerkle').textContent=META.merkle;
-  $('#hRole').onclick=()=>goView('status');
+  if(!VIEWER) $('#hRole').onclick=()=>goView('status');
   $('#hAuth').onclick=openOfficialModal;
   $('#hHelp').onclick=()=>openModal('Help',html`<p>A built-in AI assistant for the dashboard is on the way. For now, use the <code>hv</code> CLI or <a href="https://hivemind.projectmentor.org/dev/" target="_blank" rel="noopener">the docs</a>.</p>`);
   getJSON('/api/verify').then(v=>{const a=$('#hAuth'); if(v.ok){a.textContent='✓ v'+(v.version||META.contract)+' authentic';a.className='badge link ok';}else{a.textContent='⚠ modified locally';a.className='badge link warn';}}).catch(()=>{});
+  if(VIEWER) document.querySelectorAll('nav button[data-v="telemetry"],nav button[data-v="modules"]').forEach(b=>b.remove());
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>goTab(b.dataset.v));
   if(!(await openHash())) render();
 })();
@@ -368,7 +390,7 @@ async function telemetry(){
 
 /* ---------- Per-node drill-down ---------- */
 let NTP=1, NC={fpage:1,dpage:1,status:'all'};
-const openNode=id=>{state.node=id;state.nodeTab='overview';state.detail=null;NTP=1;NC={fpage:1,dpage:1,status:'all'};render();};
+const openNode=id=>{if(VIEWER)return;state.node=id;state.nodeTab='overview';state.detail=null;NTP=1;NC={fpage:1,dpage:1,status:'all'};render();};
 const backHive=()=>{state.node=null;state.detail=null;state.view='hive';setNav('hive');render();};
 const nodeTab=tab=>{state.nodeTab=tab;if(tab==='telemetry')NTP=1;if(tab==='corpus'){NC={fpage:1,dpage:1,status:'all'};}render();};
 const openNodeContested=()=>{state.nodeTab='corpus';NC={fpage:1,dpage:1,status:'contested'};render();};
@@ -584,7 +606,13 @@ function settingsPanel(prefix,cls){
   }).catch(()=>put(box,empty('settings unavailable — is hconfig installed on this node? (hive-mind module add hconfig)')));
   return box;
 }
+async function viewerSettings(){
+  put($('#app'),html`<div class="crumb"><span class="who">Settings › Shared values</span></div>`,html`<div class="panel"><h2>Read-only</h2><div id="vset">${spin()}</div></div>`);
+  getJSON('/api/config/records').then(r=>put($('#vset'),r.keys.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Source</th></tr></thead><tbody>${r.keys.map(k=>html`<tr><td class="mono">${k.id}<div class="c-dim fs12">${k.description||''}</div></td><td>${String(k.value!=null?k.value:k.default)}</td><td>${k.source||''}</td></tr>`)}</tbody></table>`:empty('No settings are shared with viewers.')))
+    .catch(()=>put($('#vset'),empty('settings unavailable')));
+}
 async function settingsNode(){
+  if(VIEWER) return viewerSettings();
   put($('#app'),html`<div class="crumb"><span class="who">Settings › Node</span></div>`,
     html`<div class="panel"><h2>Node</h2>${settingsPanel('node:','node')}<h2>Core governed keys</h2>${settingsPanel('core:','governed')}</div>`);
 }
