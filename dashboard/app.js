@@ -311,7 +311,7 @@ function ovFleet(){
   const dv=ovDevices();
   if(!dv){ if(OVERR.peers) put(b,...ovFail('peers','the device list could not be read.')); return; }
   const others=dv.filter(d=>!d.self);
-  const spark=d=>{ const p=OVD.spark&&OVD.spark[d.device]; return p?html`<div class="spk">${VIZ.spark(p,{label:d.name+': sessions per day, last '+OV_SPARK_DAYS+' days',animate:false})}</div>`:null; };
+  const spark=d=>{ const pd=OVD.perDay&&OVD.perDay[d.device], p=pd&&ovDays(OV_SPARK_DAYS).map(k=>pd.by[k]||0); return p?html`<div class="spk">${VIZ.spark(p,{label:d.name+': sessions per day, last '+OV_SPARK_DAYS+' days',animate:false})}</div>`:null; };
   put(b,html`<div class="wsum">${dv.length} device${dv.length===1?'':'s'}, ${dv.filter(d=>d.online).length} online</div>
     ${dv.map(d=>html`<div class="frow"><span class=${'dot '+ovDot(d)}></span><span class="fname">${d.name}</span>
       <span class=${'fstate '+(d.state==='diverged'?'c-warn':d.online?'c-ok':'c-muted')}>${d.self?'this device':d.state}</span>
@@ -357,15 +357,82 @@ function ovApprovals(){
   put(b,empty('happrove (approving owner actions with a tap on your phone) is not installed. Install it with:'),cmdBlock('hive-mind module add happrove'));
 }
 
-/* The last OV_SPARK_DAYS days of sessions for each reachable device: one read per device through the request queue, at most OV_SPARK_CAP. */
+/* One read per reachable device (through the request queue, at most OV_SPARK_CAP) returns that device's sessions per day. The Devices
+   sparklines (14 days) and the Activity chart (90 days) both draw from it, so the Activity chart adds no read. */
+const ovDays=n=>[...Array(n)].map((_,i)=>new Date(Date.now()-(n-1-i)*864e5).toISOString().slice(0,10));
 function ovSparks(){
   const t=OVD.tel; if(!t||VIEWER) return;
-  const days=[...Array(OV_SPARK_DAYS)].map((_,i)=>new Date(Date.now()-(OV_SPARK_DAYS-1-i)*864e5).toISOString().slice(0,10));
   (t.nodes||[]).filter(n=>n.reachable).slice(0,OV_SPARK_CAP).forEach(n=>
     getJSON('/api/telemetry?scope=hive&fnode='+encodeURIComponent(n.node)+'&limit=1').then(r=>{
       const by={}; (r.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
-      (OVD.spark=OVD.spark||{})[n.node_id]=days.map(d=>by[d]||0); ovFleet();
+      (OVD.perDay=OVD.perDay||{})[n.node_id]={name:n.node,by};
+      ovFleet(); ovActivity();
     }).catch(()=>{}));
+}
+
+/* Corpus growth (interim, no new route): facts and decisions added per day, from the newest 200 of each. When a kind has more than
+   200 entries the window starts where the shorter list begins, so the two lines cover the same days. */
+function ovGrowth(){
+  const b=document.getElementById('ovGrowth'); if(!b) return;
+  const f=OVD.gfacts, d=OVD.gdecs;
+  if(!f||!d){ if(OVERR.gfacts||OVERR.gdecs) put(b,...ovFail(OVERR.gfacts?'gfacts':'gdecs',OV_DOWN)); return; }
+  const fl=f.facts||[], dl=d.decisions||[], cut=(l,tot)=>(tot||0)>l.length;
+  if(!fl.length&&!dl.length){ put(b,empty('nothing remembered yet. Add a fact with:'),cmdBlock('hv remember "<fact>" --tags <tag>')); return; }
+  const day=r=>String(r.created||'').slice(0,10), first=l=>l.map(day).filter(Boolean).sort()[0];
+  const lim=[cut(fl,f.facts_total)?first(fl):null,cut(dl,d.decisions_total)?first(dl):null].filter(Boolean).sort();
+  const all=[first(fl),first(dl)].filter(Boolean).sort();
+  const days=ovDays(90), week=ovDays(7)[0];
+  let start=lim.length?lim[lim.length-1]:all[0]; if(start>week) start=week;
+  const win=days.filter(x=>x>=start), n=l=>{ const by={}; l.forEach(r=>{ const k=day(r); if(k) by[k]=(by[k]||0)+1; }); return win.map(x=>by[x]||0); };
+  const fp=n(fl), dp=n(dl), sum=a=>a.reduce((x,y)=>x+y,0), added=sum(fp)+sum(dp);
+  const cap=(cut(fl,f.facts_total)||cut(dl,d.decisions_total))?' (counted from the newest 200 facts and 200 decisions)':'';
+  put(b,html`<div class="wsum"><span class="big2">${fmtNum(added)}</span> added in the last ${win.length} days${cap}</div>
+    ${VIZ.line([{label:'Facts',points:fp},{label:'Decisions',points:dp}],Object.assign({area:true,label:'Facts and decisions added per day, last '+win.length+' days: '+fmtNum(sum(fp))+' facts, '+fmtNum(sum(dp))+' decisions'},ovAnim('growth')))}
+    <div class="legend"><span><i class="s1"></i>Facts ${fmtNum(sum(fp))}</span><span><i class="s2"></i>Decisions ${fmtNum(sum(dp))}</span></div>`);
+}
+
+/* Seat activity: sessions in the last 7 days by agent, from the newest 200 sessions on the hive (operator only). */
+function ovSeats(){
+  const b=document.getElementById('ovSeats'); if(!b) return;
+  const t=OVD.tel;
+  if(!t){ if(OVERR.tel) put(b,...ovFail('tel',OV_DOWN)); return; }
+  const rec=t.recent||[], cut=Date.now()-7*864e5, by={};
+  const at=r=>Date.parse(String(r.when||'')+'Z')||0;
+  rec.forEach(r=>{ if(at(r)>=cut&&r.agent){ const a=by[r.agent]||(by[r.agent]={agent:r.agent,n:0,last:0}); a.n++; a.last=Math.max(a.last,at(r)); } });
+  const rows=Object.values(by).sort((x,y)=>y.n-x.n||y.last-x.last).slice(0,8);
+  if(!rows.length){ put(b,empty('no sessions in 7 days. Sessions appear here when an AI session runner (such as Claude Code) uses HiveMind.')); return; }
+  const trunc=(t.recent_total||0)>rec.length&&rec.length&&Math.min(...rec.map(at))>cut;
+  put(b,html`${VIZ.bars(rows.map(r=>({label:r.agent,value:r.n})),Object.assign({label:'Sessions in 7 days by agent: '+rows.map(r=>r.agent+' '+r.n).join(', ')},ovAnim('seats')))}
+    ${rows.map(r=>html`<div class="srow"><span class="sname mono" title=${r.agent}>${r.agent}</span><span class="sn">${fmtNum(r.n)}</span><span class="c-dim fs12">last ${fmtAge(Math.round((Date.now()-r.last)/1000))} ago</span></div>`)}
+    <div class="wnote">An agent is one AI session runner, such as <span class="mono">claude-code:david@gregorius</span>.${trunc?' Counted from the newest '+rec.length+' sessions, so a busy week can show fewer than it had.':''}</div>`);
+}
+
+/* Spend (interim): the cost of models with a known price is the all-time total; the bars are sessions per day until the daemon reports cost per day. */
+function ovSpend(){
+  const b=document.getElementById('ovSpend'); if(!b) return;
+  const t=OVD.tel;
+  if(!t){ if(OVERR.tel) put(b,...ovFail('tel',OV_DOWN)); return; }
+  const models=Object.values(t.by_model||{}), unknown=models.filter(m=>!m.priced).length, tot=t.totals||{};
+  if(!models.some(m=>m.priced)){ put(b,empty('no session with a known price yet.'),unknown?html`<div class="wnote">Price unknown: ${unknown} model${unknown===1?'':'s'}.</div>`:null); return; }
+  const by={}; (t.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
+  const week=ovDays(7), vals=week.map(x=>by[x]||0);
+  put(b,html`<div class="wsum"><span class="big2">${fmtCost(tot.cost_usd)}</span> all time, priced models only</div>
+    ${VIZ.bars(week.map((x,i)=>({label:x,value:vals[i]})),Object.assign({label:'Sessions per day, last 7 days: '+vals.join(', ')},ovAnim('spend')))}
+    <div class="wnote">Bars: sessions per day, last 7 days (cost per day is not reported yet).${unknown?' Price unknown: '+unknown+' model'+(unknown===1?'':'s')+', not in the total.':''}</div>`);
+}
+
+/* Activity: sessions per day across all devices, 90 days, stacked by device (operator only). Draws from the same per-device reads as the sparklines. */
+function ovActivity(){
+  const b=document.getElementById('ovActivity'); if(!b) return;
+  const t=OVD.tel;
+  if(!t){ if(OVERR.tel) put(b,...ovFail('tel',OV_DOWN)); return; }
+  const devs=Object.values(OVD.perDay||{});
+  if(!devs.length) return;
+  const days=ovDays(90), tot=devs.reduce((a,d)=>a+days.reduce((x,k)=>x+(d.by[k]||0),0),0);
+  if(!tot){ put(b,empty('no sessions recorded on any device.')); return; }
+  put(b,html`<div class="wsum"><span class="big2">${fmtNum(tot)}</span> sessions in the last 90 days, across ${devs.length} device${devs.length===1?'':'s'}</div>
+    ${VIZ.bars(days.map(k=>({label:k,parts:devs.map(d=>d.by[k]||0)})),Object.assign({stacked:true,label:'Sessions per day by device, last 90 days: '+devs.map(d=>d.name).join(', ')},ovAnim('activity')))}
+    <div class="legend">${devs.map((d,i)=>html`<span><i class=${'s'+(i%6+1)}></i>${d.name}</span>`)}</div>`);
 }
 
 function ovFetch(){
@@ -376,8 +443,10 @@ function ovFetch(){
   ld('verify','/api/verify',null,ovHero);
   ld('peers','/api/peers?probe=0',r=>r.peers,()=>{ ovHero(); ovFleet(); });
   ld('audit','/api/audit',null,ovAudit);
+  ld('gfacts','/api/search?kind=fact&sort=recency&limit=200',null,ovGrowth);
+  ld('gdecs','/api/search?kind=decision&sort=recency&limit=200',null,ovGrowth);
   if(!VIEWER){
-    ld('tel','/api/telemetry?scope=hive&limit=1',null,()=>{ ovHero(); ovFleet(); ovSparks(); });
+    ld('tel','/api/telemetry?scope=hive&limit=200&sort=recent',null,()=>{ ovHero(); ovFleet(); ovSparks(); ovSeats(); ovSpend(); ovActivity(); });
     ld('modules','/api/modules',null,ovModules);
     ovApprovals();
   }
@@ -410,11 +479,15 @@ async function overview(){
         <div class="sub" id="ovAge"></div>
       </div>
     </section>
-    ${widget('w8','ovFleet','Devices',()=>goTab('hive'),'rows','Hive')}
+    ${widget('w6','ovFleet','Devices',()=>goTab('hive'),'rows','Hive')}
+    ${widget('w6','ovGrowth','Corpus growth',()=>goTab('corpus'),'bars','Corpus')}
     ${widget('w4','ovMix','Corpus mix',()=>goTab('corpus'),'ring','Corpus')}
-    ${widget(VIEWER?'w12':'w4','ovAudit','Audit',()=>goView('audit'),'bars','Details')}
+    ${widget(VIEWER?'w8':'w4','ovAudit','Audit',()=>goView('audit'),'bars','Details')}
     ${VIEWER?null:widget('w4','ovModules','Modules',()=>goTab('modules'),'rows','Modules')}
+    ${VIEWER?null:widget('w4','ovSeats','Seat activity',()=>goTab('agents'),'bars','Agents')}
+    ${VIEWER?null:widget('w4','ovSpend','Spend this week',()=>goTab('spend'),'bars','Spend')}
     ${VIEWER?null:widget('w4','ovApprovals','Approvals',null,'rows')}
+    ${VIEWER?null:widget('w12','ovActivity','Activity',()=>goTab('telemetry'),'bars','Telemetry')}
   </div>`);
   ovFetch();
   OVT=setInterval(ovTick,5000);
