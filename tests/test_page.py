@@ -44,5 +44,5 @@ def test_every_api_route_the_page_calls_is_one_hdash_serves():
     hdash = importlib.util.module_from_spec(spec)
     loader.exec_module(hdash)
     called = set(re.findall(r"/api/([a-z]+)", JS))
-    served = set(hdash.API_ROUTES) | {"csrf"}      # /api/csrf is the guard's own route, not a gateway route
+    served = set(hdash.API_ROUTES) | {"csrf", "config"}      # /api/csrf is the guard's own route; /api/config/records is the viewer listener's
     assert called and called <= served, called - served

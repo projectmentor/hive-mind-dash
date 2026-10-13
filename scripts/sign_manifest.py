@@ -35,6 +35,7 @@ DEFAULTS = {
     "contract": 1,
     "cli": {"name": "hdash", "command": ["python3", "-I", "hdash"]},
     "service": {"command": ["python3", "-I", "hdash", "serve"], "restart": "always"},
+    "doctor": ["python3", "-I", "hdash", "doctor"],
     "reads": ["overview", "tags", "related", "audit", "peers", "verify"],
     "config_schema": {
         "port": {"type": "int", "min": 1024, "max": 65535, "default": "9896", "scope": "node",
