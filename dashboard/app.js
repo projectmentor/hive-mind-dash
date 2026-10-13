@@ -266,22 +266,158 @@ function renderDetail(){
 }
 
 /* ---------- Overview ---------- */
+/* A grid of widgets (hdash_overview_v2 §3). The frame draws at once with a skeleton in each widget; every widget then fills from its own
+   read, so one slow or refused read leaves the others alone. The operator page refreshes every 60 s while the tab is visible and the
+   viewer page every 120 s; a refresh redraws in place with no animation. A viewer's page leaves out what the viewer listener refuses. */
 const navCard=(lbl,val,go,statCls,id)=>html`<div class="card link" id=${id} onclick=${go}><div class="lbl">${lbl}</div><div class=${statCls||'stat'}>${val}</div></div>`;
+const OV_EVERY=(VIEWER?120:60)*1000, OV_SPARK_DAYS=14, OV_SPARK_CAP=8;
+let OVT=null, OVD={}, OVERR={}, OVSEEN={}, OVAT=0;
+const ovLive=()=>state.view==='overview'&&!state.node&&!state.detail&&!!document.getElementById('ovroot');
+const ovAnim=k=>{ const a=!OVSEEN[k]; OVSEEN[k]=1; return {animate:a}; };
+const widget=(cls,id,title,go,kind,more)=>html`<section class=${'panel widget '+cls}><h2>${title}${go?html`<button class="wlink" type="button" onclick=${go}>${more||'Details'} ›</button>`:null}</h2><div class="wbody" id=${id}>${VIZ.skeleton(kind)}</div></section>`;
+const heroStat=(id,lbl,sub,subId)=>html`<div class="hstat"><div class="lbl">${lbl}</div><div class="big" id=${id}>…</div><div class="sub" id=${subId||null}>${sub}</div></div>`;
+const setNum=(id,n)=>{ const el=document.getElementById(id); if(!el||el.dataset.v===String(n)) return; const first=!el.dataset.v; el.dataset.v=String(n); if(first) VIZ.countUp(el,n); else el.textContent=fmtNum(n); };
+const ovFail=(key,down,cmd)=>[empty(failText(OVERR[key],down)),cmd?cmdBlock(cmd):null];
+const OV_DOWN='could not reach this device\'s HiveMind service — is it running? Check it with:';
+
+/* The devices: admitted devices only. A module's own admitted key is not a device (it is on the Modules page). */
+function ovDevices(){
+  const ps=OVD.peers; if(!ps) return null;
+  const tn={}; ((OVD.tel&&OVD.tel.nodes)||[]).forEach(n=>{ tn[n.node_id]=n; });
+  return ps.filter(p=>!isModuleRow(p)).map(p=>{
+    const t=tn[p.device];
+    const st=p.self||(t&&(t.status==='online'||t.status==='self'))?'online':/diverged|stale/.test(p.status)?'diverged':/in sync|reachable/.test(p.status)?'in sync':p.status==='admitted'?'not checked':'offline';
+    return {name:p.name,device:p.device,self:!!p.self,seen:p.seen,state:st,online:st==='online'||st==='in sync'||st==='diverged'};
+  });
+}
+const ovDot=d=>d.self?'self':d.state==='online'||d.state==='in sync'?'ok':d.state==='diverged'?'stale':'off';
+
+function ovHero(){
+  const m=OVD.meta; if(!m) return;
+  setNum('ovFacts',m.facts); setNum('ovDecs',m.decisions); setNum('ovContested',m.contested);
+  const c=document.getElementById('ovContested'); if(c) c.classList.toggle('c-bad',!!m.contested);
+  if(OVD.ideas!=null) setNum('ovIdeas',OVD.ideas);
+  const dv=ovDevices();
+  if(dv){ setNum('ovOnline',dv.filter(d=>d.online).length); put(document.getElementById('ovOnlineSub'),'of '+dv.length+' admitted (allowed to write to this hive)'); }
+  put(document.getElementById('ovWho'),html`<strong>${m.node}</strong> <span class=${'badge '+(m.role==='OWNER'?'owner':'')}>${m.role}</span>`);
+  put(document.getElementById('ovMerkle'),m.merkle);
+  const v=OVD.verify, s=document.getElementById('ovShield');
+  if(s&&v) put(s,shieldIcon(v.ok),html`<span>${v.ok?'v'+(v.version||m.contract)+' genuine':'changed locally'}</span>`);
+  put(document.getElementById('ovAge'),OVAT?'updated '+Math.max(0,Math.round((Date.now()-OVAT)/1000))+'s ago':null);
+}
+
+function ovFleet(){
+  const b=document.getElementById('ovFleet'); if(!b) return;
+  const dv=ovDevices();
+  if(!dv){ if(OVERR.peers) put(b,...ovFail('peers','the device list could not be read.')); return; }
+  const others=dv.filter(d=>!d.self);
+  const spark=d=>{ const p=OVD.spark&&OVD.spark[d.device]; return p?html`<div class="spk">${VIZ.spark(p,{label:d.name+': sessions per day, last '+OV_SPARK_DAYS+' days',animate:false})}</div>`:null; };
+  put(b,html`<div class="wsum">${dv.length} device${dv.length===1?'':'s'}, ${dv.filter(d=>d.online).length} online</div>
+    ${dv.map(d=>html`<div class="frow"><span class=${'dot '+ovDot(d)}></span><span class="fname">${d.name}</span>
+      <span class=${'fstate '+(d.state==='diverged'?'c-warn':d.online?'c-ok':'c-muted')}>${d.self?'this device':d.state}</span>
+      <span class="fseen c-dim">${d.seen&&d.seen!=='—'?'last seen '+d.seen:'never seen'}</span>${VIEWER?null:spark(d)}</div>`)}
+    ${others.length?null:html`<div class="wnote">No other device is admitted yet. An invitation lets a second device write to this hive:</div>`}${others.length?null:cmdBlock('hive-mind invite')}`);
+}
+
+function ovMix(){
+  const b=document.getElementById('ovMix'), m=OVD.meta; if(!b||!m) return;
+  const ideas=OVD.ideas||0, con=Math.min(m.contested||0,m.facts||0), tot=(m.facts||0)+(m.decisions||0)+ideas;
+  if(!tot){ put(b,empty('nothing remembered yet. Add a fact with:'),cmdBlock('hv remember "<fact>" --tags <tag>')); return; }
+  const parts=[{label:'Facts',value:(m.facts||0)-con},{label:'Contested facts',value:con,hatch:true},{label:'Decisions',value:m.decisions||0},{label:'Ideas',value:ideas}];
+  put(b,html`<div class="wsum"><span class="big2">${fmtNum(tot)}</span> entries</div>${VIZ.ring(parts,Object.assign({label:'Facts, decisions and ideas: '+parts.map(p=>p.label+' '+fmtNum(p.value)).join(', ')},ovAnim('mix')))}
+    <div class="legend">${parts.map((p,i)=>html`<span><i class=${'s'+(i+1)}></i>${p.label} ${fmtNum(p.value)}</span>`)}</div>
+    <div class="wnote">A contested fact has a correction recorded against it. An idea is a hypothesis that earns confidence later.</div>`);
+}
+
+function ovAudit(){
+  const b=document.getElementById('ovAudit'); if(!b) return;
+  const a=OVD.audit;
+  if(!a){ if(OVERR.audit) put(b,...ovFail('audit',OV_DOWN)); return; }
+  const rows=[['Re-check',a.recheck,'facts that can go out of date, past their freshness date'],['Stale',a.stale,'facts not confirmed for a long time'],['Duplicate',a.duplicate,'entries that say the same thing'],['Contravened',a.contravened,'corrections not yet reconciled']];
+  if(!rows.some(r=>r[1])){ put(b,empty('clean: nothing to reconcile. Run the full check with:'),cmdBlock('hv audit')); return; }
+  put(b,html`<div class="pointer" onclick=${()=>goView('audit')}>${VIZ.bars(rows.map(r=>({label:r[0]+' ('+r[2]+')',value:r[1]})),Object.assign({label:'Audit: '+rows.map(r=>r[0]+' '+r[1]).join(', ')},ovAnim('audit')))}
+    <div class="acols">${rows.map(r=>html`<div title=${r[2]}><div class=${'big2 '+(r[1]?'c-warn':'')}>${fmtNum(r[1])}</div><div class="sub">${r[0]}</div></div>`)}</div></div>
+    <div class="wnote">Re-check: facts that can go out of date, past their freshness date. Stale: not confirmed for a long time. Contravened: corrections not yet reconciled. Click to open the list.</div>`);
+}
+
+function ovModules(){
+  const b=document.getElementById('ovModules'); if(!b) return;
+  const r=OVD.modules;
+  if(!r){ if(OVERR.modules) put(b,...ovFail('modules','modules unavailable — is hive-mind on this node?')); return; }
+  if(!r.modules.length){ put(b,empty('no modules installed. A module is an installed add-on, such as hconfig:'),cmdBlock('hive-mind module add hconfig')); return; }
+  put(b,r.modules.map(m=>html`<div class="mrow pointer" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';setNav('modules');render();}}>
+    <span class="mname"><strong>${m.name}</strong> <small class="c-dim">v${m.version}</small></span>
+    <span class="c-dim fs12">${m.trust}</span>${m.signature==='valid'?null:html`<span class="c-warn fs12">signature ${m.signature}</span>`}
+    <span class="mhealth">${healthPill(m.doctor)}</span>${m.problem?html`<div class="wnote c-warn">${m.problem}</div>`:null}</div>`));
+}
+
+/* Reserved slot (the operator grid must not move when happrove ships): nothing serves happrove data yet. */
+function ovApprovals(){
+  const b=document.getElementById('ovApprovals'); if(!b) return;
+  put(b,empty('happrove (approving owner actions with a tap on your phone) is not installed. Install it with:'),cmdBlock('hive-mind module add happrove'));
+}
+
+/* The last OV_SPARK_DAYS days of sessions for each reachable device: one read per device through the request queue, at most OV_SPARK_CAP. */
+function ovSparks(){
+  const t=OVD.tel; if(!t||VIEWER) return;
+  const days=[...Array(OV_SPARK_DAYS)].map((_,i)=>new Date(Date.now()-(OV_SPARK_DAYS-1-i)*864e5).toISOString().slice(0,10));
+  (t.nodes||[]).filter(n=>n.reachable).slice(0,OV_SPARK_CAP).forEach(n=>
+    getJSON('/api/telemetry?scope=hive&fnode='+encodeURIComponent(n.node)+'&limit=1').then(r=>{
+      const by={}; (r.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
+      (OVD.spark=OVD.spark||{})[n.node_id]=days.map(d=>by[d]||0); ovFleet();
+    }).catch(()=>{}));
+}
+
+function ovFetch(){
+  OVAT=Date.now();
+  const ld=(key,url,post,draw)=>getJSON(url).then(r=>{ OVD[key]=post?post(r):r; OVERR[key]=null; draw(); }).catch(e=>{ OVERR[key]=e; if(OVD[key]==null) draw(); });
+  ld('meta','/api/overview',r=>{ META=r; put($('#hMerkle'),r.merkle); return r; },()=>{ ovHero(); ovMix(); });
+  ld('ideas','/api/search?kind=idea&limit=1',r=>r.ideas_total==null?(r.ideas||[]).length:r.ideas_total,()=>{ ovHero(); ovMix(); });
+  ld('verify','/api/verify',null,ovHero);
+  ld('peers','/api/peers?probe=0',r=>r.peers,()=>{ ovHero(); ovFleet(); });
+  ld('audit','/api/audit',null,ovAudit);
+  if(!VIEWER){
+    ld('tel','/api/telemetry?scope=hive&limit=1',null,()=>{ ovHero(); ovFleet(); ovSparks(); });
+    ld('modules','/api/modules',null,ovModules);
+    ovApprovals();
+  }
+}
+
+/* One timer per Overview: it redraws "updated Ns ago", refreshes when the period is up while the tab is visible, and ends with the view. */
+function ovTick(){
+  if(!ovLive()){ clearInterval(OVT); OVT=null; return; }
+  if(document.hidden) return;
+  if(Date.now()-OVAT>=OV_EVERY) ovFetch(); else ovHero();
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&OVT) ovTick(); });
+
 async function overview(){
-  put($('#app'),html`
-   <div class="grid cards">
-     ${navCard('Facts',META.facts,()=>goTab('corpus'))}
-     ${navCard('Decisions',META.decisions,()=>goTab('corpus'))}
-     ${navCard('Nodes',[META.nodes,' ',html`<small>admitted</small>`],()=>goTab('hive'))}
-     ${navCard('Contested',META.contested,openContested,META.contested?'stat c-bad':'stat c-ink')}
-     ${navCard('Audit',html`<span class="spin"></span>`,()=>goView('audit'),'stat','auditCard')}
-   </div>
-   <div class="panel"><h2>Top facts</h2><div id="ovFacts">${spin()}</div></div>
-   <div class="panel"><h2>Recent decisions</h2><div id="ovDecs">${spin()}</div></div>`);
-  getJSON('/api/audit').then(a=>{const c=$('#auditCard'); if(c)put(c,html`<div class="lbl">Audit</div><div class=${'stat fs15 '+((a.recheck+a.stale+a.duplicate)?'c-warn':'c-ink')}>${a.recheck} <small>re-check · ${a.stale} stale · ${a.duplicate} dup${a.contravened?` · ${a.contravened} contra`:''}</small></div>`);}).catch(()=>{});
-  getJSON('/api/search?limit=8').then(s=>{LAST.facts=s.facts;LAST.decisions=s.decisions;
-    const f=$('#ovFacts'); if(f)put(f,s.facts.slice(0,5).map(factRow).concat(s.facts.length?[]:[empty('none')]));
-    const d=$('#ovDecs'); if(d)put(d,s.decisions.slice(0,4).map(decRow).concat(s.decisions.length?[]:[empty('none')]));}).catch(()=>{});
+  OVD={meta:META}; OVERR={}; OVSEEN={}; OVAT=0;
+  clearInterval(OVT);
+  put($('#app'),html`<div class="wgrid" id="ovroot">
+    <section class="hero w12">
+      <div class="hstats">
+        ${heroStat('ovFacts','Facts','things this hive remembers')}
+        ${heroStat('ovDecs','Decisions','choices recorded with the reason')}
+        ${heroStat('ovIdeas','Ideas','hypotheses that earn confidence later')}
+        ${heroStat('ovContested','Contested','facts with a correction against them')}
+        ${heroStat('ovOnline','Devices online','of … admitted','ovOnlineSub')}
+      </div>
+      <div class="hside">
+        <button class="hverify" id="ovShield" type="button" title="Check that this software is genuine" onclick=${openOfficialModal}><span class="c-dim">checking…</span></button>
+        <div id="ovWho"></div>
+        <div class="mono" title="merkle root: a hash of the whole journal of entries. Equal on two devices means they hold the same entries (they are in sync)." id="ovMerkle"></div>
+        <div class="sub" id="ovAge"></div>
+      </div>
+    </section>
+    ${widget('w8','ovFleet','Devices',()=>goTab('hive'),'rows','Hive')}
+    ${widget('w4','ovMix','Corpus mix',()=>goTab('corpus'),'ring','Corpus')}
+    ${widget(VIEWER?'w12':'w4','ovAudit','Audit',()=>goView('audit'),'bars','Details')}
+    ${VIEWER?null:widget('w4','ovModules','Modules',()=>goTab('modules'),'rows','Modules')}
+    ${VIEWER?null:widget('w4','ovApprovals','Approvals',null,'rows')}
+  </div>`);
+  ovFetch();
+  OVT=setInterval(ovTick,5000);
 }
 
 /* ---------- Corpus ---------- */
