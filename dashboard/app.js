@@ -42,7 +42,7 @@ const confColor=c=>c>=.6?'var(--ok)':c>=.3?'var(--accent)':'var(--warn)';
    skips the calls the viewer listener refuses, never sends ?node= and asks for peers with probe=0. This only removes calls: the
    viewer listener is the gate, and a refusal it sends is shown, not swallowed. */
 const VIEWER=!['127.0.0.1','localhost','[::1]','::1'].includes(location.hostname);
-const VIEWER_NO=['/api/status','/api/telemetry','/api/entities','/api/modules','/api/module','/api/settings','/api/csrf'];
+const VIEWER_NO=['/api/status','/api/telemetry','/api/entities','/api/modules','/api/module','/api/settings','/api/workspace','/api/csrf'];
 function viewerUrl(u){
   const x=new URL(u,location.origin);
   if(VIEWER_NO.includes(x.pathname)) throw new Error('not available to viewers: '+x.pathname);
@@ -78,7 +78,7 @@ const setNav=v=>document.querySelectorAll('nav button').forEach(x=>x.classList.t
   $('#hAuth').onclick=openOfficialModal;
   $('#hHelp').onclick=()=>openModal('Help',html`<p>A built-in AI assistant for the dashboard is on the way. For now, use the <code>hv</code> CLI or <a href="https://hivemind.projectmentor.org/dev/" target="_blank" rel="noopener">the docs</a>.</p>`);
   getJSON('/api/verify').then(v=>{const a=$('#hAuth'); if(v.ok){a.textContent='✓ v'+(v.version||META.contract)+' authentic';a.className='badge link ok';}else{a.textContent='⚠ modified locally';a.className='badge link warn';}}).catch(()=>{});
-  if(VIEWER) document.querySelectorAll('nav button[data-v="telemetry"],nav button[data-v="modules"]').forEach(b=>b.remove());
+  if(VIEWER) document.querySelectorAll('nav button[data-v="telemetry"],nav button[data-v="agents"],nav button[data-v="trust"],nav button[data-v="modules"]').forEach(b=>b.remove());
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>goTab(b.dataset.v));
   if(!(await openHash())) render();
 })();

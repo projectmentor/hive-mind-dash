@@ -26,7 +26,7 @@ LOGIN = "alice@example.com"
 SUBSET = ["/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/api/overview", "/api/search?q=x&limit=5",
           "/api/tags", "/api/related?kind=fact&id=1", "/api/item?sid=h:abc", "/api/audit", "/api/peers?probe=0",
           "/api/config/records", "/api/verify"]
-REFUSED = ["/api/telemetry", "/api/status", "/api/daemon", "/api/entities", "/api/modules", "/api/module?name=x",
+REFUSED = ["/api/telemetry", "/api/status", "/api/daemon", "/api/entities", "/api/modules", "/api/module?name=x", "/api/workspace?name=agents",
            "/api/settings", "/api/csrf", "/api/overview?node=abc", "/api/overview?Node=abc", "/api/overview?node=",
            "/api/search?q=x&node=abc", "/api/search?q=a&q=b", "/api/nope", "/../etc/passwd", "/sync/hello"]
 
@@ -676,8 +676,9 @@ def test_the_page_enters_viewer_mode_off_loopback_and_only_removes_calls():
     assert "const VIEWER=!['127.0.0.1','localhost','[::1]','::1'].includes(location.hostname)" in js
     assert "if(VIEWER) u=viewerUrl(u)" in js and "x.searchParams.delete('node')" in js and "x.searchParams.set('probe','0')" in js
     no = set(re.findall(r"'(/api/[a-z]+)'", re.search(r"const VIEWER_NO=\[(.*?)\]", js).group(1)))
-    assert {"/api/status", "/api/telemetry", "/api/entities", "/api/settings", "/api/csrf", "/api/modules", "/api/module"} <= no
+    assert {"/api/status", "/api/telemetry", "/api/entities", "/api/settings", "/api/csrf", "/api/modules", "/api/module", "/api/workspace"} <= no
     called = set(re.findall(r"/api/([a-z/]+)", js))
     served = set(hdash.VIEWER_ROUTES) | {"config/records"} | {n[5:] for n in no}
     assert {c.rstrip("/") for c in called} <= served | {"config"}, called - served
+    assert 'nav button[data-v="agents"]' in js and 'nav button[data-v="trust"]' in js      # the workspaces run module code: not for viewers
     assert "listener==='viewer'" in js and 'id="vnote"' in (ROOT / "dashboard" / "index.html").read_text()
