@@ -612,10 +612,33 @@ function settingInput(r){
   if(r.type==='enum'&&Array.isArray(r.values)) return html`<select class="sv">${r.values.map(o=>html`<option value=${o} selected=${o===String(r.set?r.value:r.default)}>${o}</option>`)}</select>`;
   return html`<input class="sv" type=${r.secret?'password':'text'} value=${cur} placeholder=${r.secret?(r.set?'set — type to replace':'not set'):''} autocomplete="off" maxlength="4096">`;
 }
+let helpSeq=0;
+function closeHelp(except){
+  document.querySelectorAll('.help-btn[aria-expanded="true"]').forEach(b=>{ if(b!==except){ b.setAttribute('aria-expanded','false'); b.nextElementSibling.hidden=true; } });
+}
+document.addEventListener('click',e=>{ if(!e.target.closest||!e.target.closest('.help-wrap')) closeHelp(); });
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeHelp(); });
+// The (?) button for a setting's plain-language `help`: a real button, text only (never markup), opens on tap, click,
+// Enter/Space, hover and keyboard focus. No `help` text means no icon.
+function helpIcon(key,text){
+  if(typeof text!=='string'||!text.trim()) return null;
+  const id='help-'+(++helpSeq);
+  const wrap=html`<span class="help-wrap"><button type="button" class="help-btn" aria-expanded="false" aria-describedby=${id} aria-label=${'What is '+key+'?'}>?</button><span class="help-pop" role="tooltip" id=${id} hidden></span></span>`;
+  const btn=wrap.querySelector('.help-btn'), pop=wrap.querySelector('.help-pop');
+  pop.textContent=text;
+  const open=on=>{ closeHelp(on?btn:null); btn.setAttribute('aria-expanded',String(on)); pop.hidden=!on; };
+  btn.addEventListener('click',e=>{ e.stopPropagation(); open(btn.getAttribute('aria-expanded')!=='true'); });
+  btn.addEventListener('focus',()=>open(true));
+  const span=wrap.firstElementChild;
+  span.addEventListener('mouseenter',()=>open(true));
+  span.addEventListener('mouseleave',()=>{ if(document.activeElement!==btn) open(false); });
+  btn.addEventListener('blur',()=>open(false));
+  return wrap;
+}
 function settingRow(r){
   const id=r.id, src=SRC_LABEL[r.source]||(r.source||'unset');
   const meta=html`<div class="c-dim fs12">${r.description||''}${r.min!=null||r.max!=null?` (${showVal(r.min)} .. ${showVal(r.max)})`:''}${r.identifying?' · identifying':''}${r.secret?' · secret':''}</div>${(r.warnings||[]).map(w=>html`<div class="c-accent fs12">${w}</div>`)}`;
-  const head=html`<td><span class="mono">${id}</span>${meta}</td><td><span class="chip">${src}</span>${r.set_by&&r.set_by.ts?html`<div class="c-dim fs12">set ${r.set_by.ts}</div>`:null}</td>`;
+  const head=html`<td><span class="mono">${id}</span>${helpIcon(id,r.help)}${meta}</td><td><span class="chip">${src}</span>${r.set_by&&r.set_by.ts?html`<div class="c-dim fs12">set ${r.set_by.ts}</div>`:null}</td>`;
   if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: set a concrete key with <span class="mono">hconfig set</span></td></tr>`;
   if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${shownVal(r)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
   if(r.source==='env') return html`<tr>${head}<td>${showVal(r.value)}</td><td class="c-dim fs12">Overridden by <span class="mono">${r.env||'an environment variable'}</span>; unset it to edit this key.</td></tr>`;
@@ -692,7 +715,7 @@ async function workspace(name){
     parts.push(html`<div class="panel"><h2>Module quotas</h2>${w.quotas.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${w.quotas.map(q=>html`<tr><td><strong>${q.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(q,k)}</td>`)}<td class="mono">${cell(q.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`);
   }
   if(name==='governance'){
-    parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
+    parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}${helpIcon(k.id,k.help)}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
     parts.push(html`<div class="panel"><h2>Who may write: admission, trust and signature per module</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Publisher</th><th>Signature</th><th>Device</th><th>Trust</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td class=${m.device==='admitted'?'c-ok':'c-warn'}>${m.device}</td><td>${m.trust}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
   }
   parts.push(...w.panels.map(wsPanel));
