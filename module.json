@@ -11,6 +11,7 @@
   "port": {
    "default": "9896",
    "description": "Loopback port the dashboard listens on",
+   "help": "The port number the dashboard uses on this device. You open it in your browser at http://127.0.0.1 followed by this port. It only answers from this device, not from the network. Change it only if another program already uses port 9896. Restart the dashboard after changing it.",
    "max": 65535,
    "min": 1024,
    "scope": "node",
@@ -68,7 +69,7 @@
   "tests/test_visual_system.py": "f41a5110a6a7428590baf66d19f0b12495c2313c0bb8baefd30f52815eb56fc0",
   "tests/test_workspaces.py": "853b578cee27b7a694269c172eaa2dddb56cc203a4952c66686da33b70fa69ce"
  },
- "min_core": "4.0",
+ "min_core": "4.1",
  "name": "hdash",
  "publisher": "IdtMxPCOYmx47k0NNrOqSCHokJvgPmRuwP9WvE9tDBc=",
  "reads": [

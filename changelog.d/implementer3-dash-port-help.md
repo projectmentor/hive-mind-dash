@@ -1,0 +1,1 @@
+- hdash module manifest: plain-language `help` text for the `port` setting (shown in the (?) pop-over), and `min_core` 4.1, which is the first core that accepts `help`. Held until v4.1.0.

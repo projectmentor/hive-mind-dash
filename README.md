@@ -67,10 +67,10 @@ installed Tailscale version by a live request that sets the header, which this r
 would fail open. Never enable Funnel on 8443, never point Serve at hdash's operator port or the daemon's port, and run `hdash unshare`
 before `hive-mind module remove hdash` (the module contract has no remove hook, so a Serve entry would be left aimed at a dead port).
 
-## Install on a 4.0 node
+## Install on a 4.1 node
 
-`hive-mind module add hdash --from https://github.com/projectmentor/hive-mind-dash --publisher <key in module.json>` needs core 4.0
-(`min_core` 4.0). The manifest is contract 1 and signed; it signs **no `trust` field, so the tier is `trusted`** (the install prints
+`hive-mind module add hdash --from https://github.com/projectmentor/hive-mind-dash --publisher <key in module.json>` needs core 4.1
+(`min_core` 4.1). The manifest is contract 1 and signed; it signs **no `trust` field, so the tier is `trusted`** (the install prints
 that before you confirm): hdash writes its launch token under `$HIVE_HOME` and runs `hconfig`, `tailscale` and the core's verbs, which a
 `confined` unit could not do. It installs the `hdash` command and a systemd user service that runs `hdash serve`
 (`restart: always`), which opens **one listener, `127.0.0.1:9896`** (config key `port`), loopback only, `GET` for the page plus the
