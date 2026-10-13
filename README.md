@@ -9,7 +9,8 @@ without the command line.
 planned; the design is tracked on [hive-mind#298](https://github.com/projectmentor/hive-mind/issues/298).
 
 ```
-hive-mind module install hdash --from <this repo> --publisher <key>   # the installer does this on every node
+hive-mind module add hconfig --from https://github.com/projectmentor/hive-mind-config --publisher <hconfig key>
+hive-mind module add hdash --from <this repo> --publisher <hdash key>   # needs hive-mind 4.0 and hconfig
 hv dash                                                              # or: hdash dash
 ```
 
@@ -65,6 +66,21 @@ Operator rules: the whole gate rests on Tailscale Serve stripping a client-suppl
 installed Tailscale version by a live request that sets the header, which this repository's tests do not do); if that ever failed it
 would fail open. Never enable Funnel on 8443, never point Serve at hdash's operator port or the daemon's port, and run `hdash unshare`
 before `hive-mind module remove hdash` (the module contract has no remove hook, so a Serve entry would be left aimed at a dead port).
+
+## Install on a 4.0 node
+
+`hive-mind module add hdash --from https://github.com/projectmentor/hive-mind-dash --publisher <key in module.json>` needs core 4.0
+(`min_core` 4.0). The manifest is contract 1 and signed; it signs **no `trust` field, so the tier is `trusted`** (the install prints
+that before you confirm): hdash writes its launch token under `$HIVE_HOME` and runs `hconfig`, `tailscale` and the core's verbs, which a
+`confined` unit could not do. It installs the `hdash` command and a systemd user service that runs `hdash serve`
+(`restart: always`), which opens **one listener, `127.0.0.1:9896`** (config key `port`), loopback only, `GET` for the page plus the
+guarded `POST /api/settings`. A second loopback listener, `127.0.0.1:9906` (`dashboard_viewer_port`), is bound **only while
+`hdash share` has turned `dashboard_share` on**, and Tailscale Serve (HTTPS 8443, run by `hdash share`, not by the install) is the
+only way it is reachable from the tailnet. Nothing listens on a non-loopback address, and the install itself changes no Serve config.
+It reads the core's `overview`, `tags`, `related`, `audit`, `peers` and `verify` routes (declared in `reads`).
+
+The module contract has no dependency field, so the manifest cannot require hconfig: install it first. Without it Settings and the Config
+tabs show nothing, and `hdash doctor` warns `hconfig is not installed` with the fix `hive-mind module add hconfig`.
 
 ## Who can save settings
 

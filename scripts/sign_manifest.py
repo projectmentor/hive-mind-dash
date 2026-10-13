@@ -31,11 +31,22 @@ MANIFEST, SIGNATURE = "module.json", "module.json.sig"
 DEFAULTS = {
     "name": "hdash",
     "version": "0.1.0",
-    "min_core": "3.1",
+    "min_core": "4.0",
     "contract": 1,
     "cli": {"name": "hdash", "command": ["python3", "-I", "hdash"]},
     "service": {"command": ["python3", "-I", "hdash", "serve"], "restart": "always"},
     "doctor": ["python3", "-I", "hdash", "doctor"],
+    # No `requires` field exists in contract 1, so hconfig is not declared here: `hdash doctor` warns when it is missing.
+    "ui": {
+        "schema": 1,
+        "title": "Dashboard",
+        "summary": "The HiveMind dashboard: operator port, read-only viewer sharing and the exposure check.",
+        "actions": [
+            {"id": "viewers", "label": "Show the viewer allowlist and the Serve status", "command": ["hdash", "viewers"]},
+            {"id": "unshare", "label": "Stop sharing the dashboard", "command": ["hdash", "unshare"],
+             "confirm": "Turns the read-only viewer listener and its Tailscale Serve front end off."},
+        ],
+    },
     "reads": ["overview", "tags", "related", "audit", "peers", "verify"],
     "config_schema": {
         "port": {"type": "int", "min": 1024, "max": 65535, "default": "9896", "scope": "node",

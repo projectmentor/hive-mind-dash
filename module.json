@@ -1,0 +1,102 @@
+{
+ "cli": {
+  "command": [
+   "python3",
+   "-I",
+   "hdash"
+  ],
+  "name": "hdash"
+ },
+ "config_schema": {
+  "port": {
+   "default": "9896",
+   "description": "Loopback port the dashboard listens on",
+   "max": 65535,
+   "min": 1024,
+   "scope": "node",
+   "type": "int"
+  }
+ },
+ "contract": 1,
+ "doctor": [
+  "python3",
+  "-I",
+  "hdash",
+  "doctor"
+ ],
+ "files": {
+  ".github/workflows/ci.yml": "ad7b124a13d124b12bfea5b74b1e04aed2ae1b1447695a2b05f21033033045f5",
+  ".gitignore": "a51104264729e7b362ea8c739de0ada29ba6e4f6047580ec3a3fd330ad20fd47",
+  "LICENSE": "83f60adac17c1b2f689fa5213069b48ab1df40fe4cbb98fd2d91d833d8a72098",
+  "README.md": "d60d77fa11acc7747d791dc236dfe92b9132620023667129841d95c9d6f8e95e",
+  "changelog.d/feat-hdash-extraction.md": "34dde2aec2f767831726524b07223db7e6aa4be2fc5e011b2bae8a791692e501",
+  "changelog.d/implementer-hdash-config-forms.md": "bada5d11632fe4b734c3d9657808186eebb90619616ae72c64d5ff20126502c4",
+  "changelog.d/implementer-hdash-viewer.md": "b672443b365c85ff05848188a2934271927dcbc85c458e6ee677feaffdf6ca77",
+  "changelog.d/implementer2-hdash-module-manifest.md": "c4098fa6f6170de189ee6e17b43c59a55a3d8228b2413ce5fd62760abb2507d2",
+  "changelog.d/implementer2-hdash-spend-governance.md": "c06ca757dca6e3e1c48378e61330ecc1b3c4982464b19b2861df844a8057c0d7",
+  "changelog.d/implementer2-hdash-workspaces.md": "423fb085c293ba3d6d3d8b8aa97f38538e4ce3d5e9247f5d71f43f296d692002",
+  "changelog.d/implementer3-hdash-p2-modules-page.md": "c77c44d090f106ef0ac7aab83cff584044a23b9be036690612fe59fe841da210",
+  "changelog.d/implementer3-hdash-p3-origin-csrf.md": "1ce72ffc0ebd111f22d701b073a321230e21d5fcfc49724a41f97ddfe5c7107d",
+  "changelog.d/implementer3-hdash-p3-tests.md": "20f84f61da2b54ac5752ba201b8e61805b173f220a2bcd4852b3083514ec1b83",
+  "dashboard/app.css": "986a7f17a00b2876f58e305c75066ff3031bfeed97c6a228533fb2937fc880db",
+  "dashboard/app.js": "044d81426d9e5d052713901c19a202ab7ba84f64009dd6dfb22c2daae232fc5d",
+  "dashboard/favicon.svg": "d9d8eee4a31c78e940e27c77c3cb971ff1e1c4cb9d39370f82cfdedcc4746804",
+  "dashboard/index.html": "83c66e02067c976ed86dfd89a1627a07118b07ddf39c6172fd99465be746e58c",
+  "dashboard/logo.svg": "a7a44c7994dda2788c3f89e095b790a3429ace2642746442d41b40de9031458a",
+  "hdash": "eb076afa34c5f81f18a8ec7fabab47c55fc8e7de2e29b0296b5a8fc69a0bd259",
+  "scripts/sign_manifest.py": "c5c84dbcbf975657cdc051dae5725a3447cd55ed3ca66bd4d5c53fb1106b0b86",
+  "tests/test_hdash.py": "87e033e32be64feed0f8468fe03660fb270949daec973788ec729f267e492ca8",
+  "tests/test_launch_token.py": "ed9270d0ef42536682a98bd2a7c3481e70fa60fb9f9a8c1b5e23ffd3a6f02291",
+  "tests/test_modules_page.py": "c0038ce687a789bdff4a381d96d6a00fa9f006069f888d6cf96d2ed12864553d",
+  "tests/test_origin_csrf.py": "cc2d30acf0a18cbc48f75e2ccbb9a6551341be13e7dd29d82c5473d291103004",
+  "tests/test_page.py": "5cac4ec97735fe606b013f91168c40c23766d0780adaa5c984407c5b6ad0ca64",
+  "tests/test_settings.py": "a9cc996690fde98a719a0ffcdc2e671316127ccc7b4565ef7694f513f5d79090",
+  "tests/test_viewer.py": "8c4f004d22cbc140966846730454805b2ef88927c53b8b21e3825f4fb21c2c75",
+  "tests/test_workspaces.py": "a479c85f4ffe559dbc8e59b5802a1075ced78df85419b73255dce5352bccc898"
+ },
+ "min_core": "4.0",
+ "name": "hdash",
+ "publisher": "IdtMxPCOYmx47k0NNrOqSCHokJvgPmRuwP9WvE9tDBc=",
+ "reads": [
+  "overview",
+  "tags",
+  "related",
+  "audit",
+  "peers",
+  "verify"
+ ],
+ "service": {
+  "command": [
+   "python3",
+   "-I",
+   "hdash",
+   "serve"
+  ],
+  "restart": "always"
+ },
+ "ui": {
+  "actions": [
+   {
+    "command": [
+     "hdash",
+     "viewers"
+    ],
+    "id": "viewers",
+    "label": "Show the viewer allowlist and the Serve status"
+   },
+   {
+    "command": [
+     "hdash",
+     "unshare"
+    ],
+    "confirm": "Turns the read-only viewer listener and its Tailscale Serve front end off.",
+    "id": "unshare",
+    "label": "Stop sharing the dashboard"
+   }
+  ],
+  "schema": 1,
+  "summary": "The HiveMind dashboard: operator port, read-only viewer sharing and the exposure check.",
+  "title": "Dashboard"
+ },
+ "version": "0.1.0"
+}
