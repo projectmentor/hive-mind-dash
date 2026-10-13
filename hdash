@@ -4,7 +4,9 @@
   hdash serve        the module service: a loopback HTTP server for the dashboard page and its `/api/*` reads
   hdash dash [--print]   print the dashboard URL and open it in a browser (what `hv dash` forwards to)
 
-`serve` answers GET only, on 127.0.0.1, for a request whose Host is the loopback address it is bound to.
+`serve` answers on 127.0.0.1 for a request whose Host is the loopback address it is bound to. It has no write route;
+every non-GET request still has to pass the Host and Origin checks and carry the CSRF token (`/api/csrf`) before a
+route is even looked up (P3), so the first write lands behind the guard.
 The page's `/api/*` calls are mapped to the core's read routes:
 
   overview, tags, related, audit, peers, verify, search, item   -> signed `GET /v1/<route>` (the module API;
@@ -21,9 +23,11 @@ imported from the core checkout (`HIVE_HOME`) so there is one Ed25519 in the sys
 
 import argparse
 import base64
+import hmac
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import stat
@@ -62,6 +66,9 @@ DOCTOR_CACHE_DIR = ".module-doctor"      # the core's cache beside the hive (hiv
 DOCTOR_LEVELS = ("ok", "warn", "fail")
 DOCTOR_MAX_BYTES, DOCTOR_MAX_RESULTS, TEXT_MAX = 256 * 1024, 100, 400
 MANIFEST_MAX_BYTES = 1024 * 1024
+CSRF_HEADER = "X-HDash-CSRF"
+CSRF_ROUTE = "/api/csrf"
+MAX_BODY = 64 * 1024
 
 
 def hive_home():
@@ -293,8 +300,13 @@ class Gateway:
     """Maps one dashboard `/api/<route>` call to the core. `v1` is a callable (path, query) -> (status, obj),
     `daemon` the same for the daemon's `/api/*`. Both are injected so tests need no live core."""
 
-    def __init__(self, v1, daemon, local=None):
+    def __init__(self, v1, daemon, local=None, writes=None):
         self.v1, self.daemon, self.local = v1, daemon, local or {}
+        self.writes = writes or {}          # name -> callable(obj) -> (status, obj); none exist yet (P3 guards them first)
+
+    def write(self, name, obj):
+        fn = self.writes.get(name)
+        return fn(obj) if fn else (405, {"error": "read only"})
 
     def route(self, name, query):
         if name in LOCAL_ROUTES:                     # this node's own catalog: `?node=` is not forwarded
@@ -314,8 +326,15 @@ class Gateway:
             return 502, {"error": f"sync daemon unavailable: {e}"}
 
 
-def make_handler(gateway, port):
+def make_handler(gateway, port, csrf_token=None):
+    """`csrf_token` is fixed only by tests; a server makes its own per process. Every non-GET route passes, in
+    order, the Host check (DNS rebinding), an `Origin` equal to this listener's own origin (required, not optional),
+    `Sec-Fetch-Site: same-origin` when the browser sends one, the CSRF token header (constant-time compare), a JSON
+    content type and a bounded JSON object body. Only then is a write route looked up, so a probe that fails any
+    check learns nothing about which writes exist."""
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
+    origins = {f"http://{h}" for h in allowed}
+    token = csrf_token or secrets.token_urlsafe(32)
     slots = __import__("threading").BoundedSemaphore(MAX_CONCURRENT)
 
     class Handler(BaseHTTPRequestHandler):
@@ -341,10 +360,24 @@ def make_handler(gateway, port):
         def _refuse(self, code, msg):
             self._send(code, {"error": msg}, extra=(("Allow", "GET, HEAD"),) if code == 405 else ())
 
+        def _origin_ok(self, mutating):
+            origin = self.headers.get("Origin")
+            if origin is None:
+                return not mutating                      # a write must say where it came from
+            return origin.lower() in origins             # a stray or `null` Origin fails on any method
+
+        def _site_ok(self, mutating):
+            site = self.headers.get("Sec-Fetch-Site")
+            return site is None or site == "same-origin" or (site == "none" and not mutating)
+
         def _serve(self):
             if (self.headers.get("Host") or "").lower() not in allowed:
                 return self._refuse(403, "forbidden host")          # DNS rebinding: only the loopback name
+            if not self._origin_ok(False) or not self._site_ok(False):
+                return self._refuse(403, "forbidden origin")
             u = urlparse(self.path)
+            if u.path == CSRF_ROUTE:
+                return self._send(200, {"token": token})
             if u.path in PAGES:
                 name = PAGES[u.path]
                 try:
@@ -373,7 +406,50 @@ def make_handler(gateway, port):
         def _no(self):
             self._refuse(405, "read only")
 
-        do_POST = do_PUT = do_DELETE = do_PATCH = do_OPTIONS = _no
+        do_OPTIONS = _no                                  # no CORS: a cross-origin preflight is never answered yes
+
+        def _deny(self, code, msg):
+            self.close_connection = True                  # the body was not read: do not parse it as the next request
+            self._send(code, {"error": msg}, extra=(("Connection", "close"),) + ((("Allow", "GET, HEAD"),) if code == 405 else ()))
+
+        def _mutate(self):
+            if (self.headers.get("Host") or "").lower() not in allowed:
+                return self._deny(403, "forbidden host")
+            if not self._origin_ok(True) or not self._site_ok(True):
+                return self._deny(403, "forbidden origin")
+            if not hmac.compare_digest((self.headers.get(CSRF_HEADER) or "").encode(), token.encode()):
+                return self._deny(403, "missing or wrong CSRF token")
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                return self._deny(415, "JSON only")
+            try:
+                n = int(self.headers.get("Content-Length") or "")
+            except ValueError:
+                return self._deny(411, "Content-Length required")
+            if not 0 <= n <= MAX_BODY:
+                return self._deny(413, "body too large")
+            try:
+                obj = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                return self._deny(400, "bad JSON")
+            if not isinstance(obj, dict):
+                return self._deny(400, "JSON object required")
+            u = urlparse(self.path)
+            if not u.path.startswith("/api/"):
+                return self._deny(404, "not found")
+            code, out = gateway.write(u.path[5:], obj)
+            self._send(code, out)
+
+        def _guarded_write(self):
+            if not slots.acquire(blocking=False):
+                return self._deny(503, "server busy")
+            try:
+                self._mutate()
+            except Exception as e:
+                self._deny(500, str(e))
+            finally:
+                slots.release()
+
+        do_POST = do_PUT = do_DELETE = do_PATCH = _guarded_write
 
     return Handler
 

@@ -104,7 +104,8 @@ def test_only_get_and_head_and_only_known_paths(served):
     port, calls = served
     for m in ("POST", "PUT", "DELETE", "PATCH"):
         code, _, h = get(port, "/api/overview", method=m)
-        assert code == 405
+        assert code == 403                      # no Origin, no CSRF token: refused before any route is looked up
+    assert get(port, "/api/overview", method="OPTIONS")[0] == 405
     assert get(port, "/api/overview", method="HEAD")[0] == 200
     for path in ("/api/daemon", "/api/nope", "/../hdash", "/hdash", "/module.json", "/dashboard/app.js", "/v1/feed"):
         assert get(port, path)[0] == 404, path
