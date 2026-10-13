@@ -66,7 +66,7 @@ function goView(v){state.view=v;state.node=null;state.detail=null;setNav(null);r
 function render(){
   if(state.detail) return renderDetail();
   if(state.node) return renderNode();
-  ({overview,corpus,hive,telemetry,status,audit,modules,modulePage,settingsNode,agents:()=>workspace('agents'),trust:()=>workspace('trust')})[state.view]();
+  ({overview,corpus,hive,telemetry,status,audit,modules,modulePage,settingsNode,agents:()=>workspace('agents'),trust:()=>workspace('trust'),spend:()=>workspace('spend'),governance:()=>workspace('governance')})[state.view]();
 }
 
 /* ---------- modals ---------- */
@@ -589,7 +589,7 @@ async function settingsNode(){
     html`<div class="panel"><h2>Node</h2>${settingsPanel('node:','node')}<h2>Core governed keys</h2>${settingsPanel('core:','governed')}</div>`);
 }
 
-/* ---------- Workspaces (Agents, Trust): defined here; a module only declares the panels that fill a slot ---------- */
+/* ---------- Workspaces (Agents, Trust, Spend, Governance): defined here; a module only declares the panels that fill a slot ---------- */
 const cell=v=>v==null?'—':typeof v==='object'?JSON.stringify(v):String(v);
 function panelBody(p){
   if(p.data==null) return empty(p.note||'no data');
@@ -604,7 +604,7 @@ function panelBody(p){
 }
 const wsPanel=p=>html`<div class="panel"><h2>${p.title} <small class="c-dim">${p.module}</small></h2>${p.note&&p.data!=null?html`<div class="note">${p.note}</div>`:null}${panelBody(p)}</div>`;
 async function workspace(name){
-  const title=name==='agents'?'Agents':'Trust';
+  const title={agents:'Agents',trust:'Trust',spend:'Spend & limits',governance:'Governance'}[name];
   put($('#app'),html`<div class="crumb"><span class="who">${title}</span></div><div id="wsbody">${spin()}</div>`);
   let w; try{ w=await getJSON('/api/workspace?name='+name); }catch(e){ put($('#wsbody'),empty('workspace unavailable — is hive-mind on this node?')); return; }
   const parts=[html`<div class="note">${w.question} Read-only: nothing on this page changes the hive.</div>`];
@@ -612,11 +612,18 @@ async function workspace(name){
     parts.push(html`<div class="panel"><h2>Claims and where to verify them</h2><table><thead><tr><th>Claim</th><th>Verify at</th></tr></thead><tbody>${w.claims.map(c=>html`<tr><td>${c.claim}</td><td>${cmdBlock(c.verify)}</td></tr>`)}</tbody></table></div>`);
     parts.push(html`<div class="panel"><h2>Modules: signature, publisher and health</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Version</th><th>Publisher</th><th>Signature</th><th>Trust</th><th>Health</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td>${m.version}</td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td>${m.trust}</td><td>${healthPill(m.doctor)}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
   }
+  if(name==='spend'){
+    parts.push(html`<div class="panel"><h2>Module quotas</h2>${w.quotas.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${w.quotas.map(q=>html`<tr><td><strong>${q.module}</strong></td><td>${q.per_hour}</td><td>${q.per_day}</td><td>${q.entry_bytes}</td><td>${q.lifetime}</td><td class="mono">${cell(q.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`);
+  }
+  if(name==='governance'){
+    parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
+    parts.push(html`<div class="panel"><h2>Who may write: admission, trust and signature per module</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Publisher</th><th>Signature</th><th>Device</th><th>Trust</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td class=${m.device==='admitted'?'c-ok':'c-warn'}>${m.device}</td><td>${m.trust}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
+  }
   parts.push(...w.panels.map(wsPanel));
   if(name==='agents'&&!w.panels.length) parts.push(empty('No installed module fills the Agents slot yet. hwatch does once it declares one.'));
   parts.push(...w.notes.map(n=>html`<div class="note">${n}</div>`));
   put($('#wsbody'),...parts);
-  if(name==='agents') agentsTelemetry();
+  if(name==='agents'||name==='spend') agentsTelemetry();
 }
 async function agentsTelemetry(){
   let t; try{ t=await getJSON('/api/telemetry'); }catch(e){ return; }
