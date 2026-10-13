@@ -67,3 +67,9 @@ def test_a_model_without_a_price_reads_unpriced_never_zero():
     assert "const fmtCost=c=>c==null?'unpriced':" in JS
     assert "'n/a'" not in JS and JS.count("v.priced?fmtCost(v.cost):'unpriced'") == 2
     assert "priced models only" in JS
+
+
+def test_an_unset_value_says_default_and_a_manifest_zero_says_manifest():
+    assert "'default ('+showVal(r.default)+')'" in JS and "<td>${shownVal(r)}</td>" in JS
+    assert "'not set: default ('+showVal(r.default)+')'" in JS
+    assert "manifest: none allowed" in JS and "default (${q[k]})" in JS

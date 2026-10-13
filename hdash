@@ -540,9 +540,9 @@ def quota_rows(rows, base=None):
     for r in rows:
         ask = read_manifest(r["name"], base).get("quota") if r.get("signature") == "valid" else None
         ask = ask if isinstance(ask, dict) else {}
-        lim = {k: (ask[k] if isinstance(ask.get(k), int) and not isinstance(ask.get(k), bool) and 0 <= ask[k] <= d else d)
-               for k, d in QUOTA_DEFAULTS.items()}
-        out.append({"module": r["name"], **lim, "use": clean_text(r.get("quota_use", ""), 80) if isinstance(r.get("quota_use"), str) else None})
+        asked = {k: isinstance(ask.get(k), int) and not isinstance(ask.get(k), bool) and 0 <= ask[k] <= d for k, d in QUOTA_DEFAULTS.items()}
+        lim = {k: (ask[k] if asked[k] else d) for k, d in QUOTA_DEFAULTS.items()}
+        out.append({"module": r["name"], **lim, "from_manifest": [k for k in QUOTA_DEFAULTS if asked[k]], "use": clean_text(r.get("quota_use", ""), 80) if isinstance(r.get("quota_use"), str) else None})
     return out
 
 

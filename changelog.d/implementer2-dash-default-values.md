@@ -1,0 +1,1 @@
+- hdash: an unset setting reads "default (N)" instead of a bare value (the core's read-only keys such as `core:quorum_m`, whose default 0 looked like a set 0), and the Spend quota table marks each limit as the core default or as asked by the module's signed manifest (hconfig asks for 0: "manifest: none allowed").

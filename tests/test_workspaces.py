@@ -111,6 +111,7 @@ def test_spend_shows_quotas_lowered_by_a_valid_manifest_and_fills_its_slot(tmp_p
     w = hdash.workspace_view("spend", rows=[row()], home=tmp_path, envelope_fn=fn, base=tmp_path)
     q = w["quotas"][0]
     assert q["per_hour"] == 10 and q["per_day"] == 500 and q["lifetime"] == 50000 and q["use"] == "1/60"   # a raise or a bool is ignored
+    assert q["from_manifest"] == ["per_hour"]                                # only what the manifest asked is marked; the rest is the default
     assert [p["id"] for p in w["panels"]] == ["wb"] and seen == ["hwatch"]
     assert any("hrouter" in n for n in w["notes"])                       # the empty hrouter slot says so
 
@@ -150,3 +151,12 @@ def test_spend_and_governance_are_routes_and_nav_buttons():
         assert hdash.local_routes()["workspace"]("name=" + n)[0] in (200, 502)
         assert f'data-v="{n}"' in (ROOT / "dashboard" / "index.html").read_text()
         assert f"workspace('{n}')" in (ROOT / "dashboard" / "app.js").read_text()
+
+
+def test_a_manifest_quota_of_zero_is_an_ask_not_a_default(tmp_path):
+    """hconfig asks 0/0 (it never writes); the page must tell that from an unset limit shown as a number."""
+    (tmp_path / "hconfig").mkdir()
+    (tmp_path / "hconfig" / "module.json").write_text(json.dumps({"name": "hconfig", "quota": {"per_hour": 0, "per_day": 0}}))
+    q = hdash.workspace_view("spend", rows=[row("hconfig")], home=tmp_path, envelope_fn=lambda n: None, base=tmp_path)["quotas"][0]
+    assert q["per_hour"] == 0 and q["per_day"] == 0 and q["from_manifest"] == ["per_hour", "per_day"]
+    assert q["entry_bytes"] == 16384 and q["lifetime"] == 50000
