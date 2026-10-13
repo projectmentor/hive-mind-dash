@@ -627,7 +627,9 @@ function helpIcon(key,text){
   const btn=wrap.querySelector('.help-btn'), pop=wrap.querySelector('.help-pop');
   pop.textContent=text;
   const open=on=>{ closeHelp(on?btn:null); btn.setAttribute('aria-expanded',String(on)); pop.hidden=!on; };
-  btn.addEventListener('click',e=>{ e.stopPropagation(); open(btn.getAttribute('aria-expanded')!=='true'); });
+  // A pointer tap fires mouseenter, focus, then click, so the click must open (not toggle) or it undoes the open; only a
+  // keyboard click (detail 0: Enter/Space) toggles.
+  btn.addEventListener('click',e=>{ e.stopPropagation(); open(e.detail===0?btn.getAttribute('aria-expanded')!=='true':true); });
   btn.addEventListener('focus',()=>open(true));
   const span=wrap.firstElementChild;
   span.addEventListener('mouseenter',()=>open(true));

@@ -56,3 +56,12 @@ def test_settings_and_policy_rows_show_the_icon():
 def test_the_popover_has_styles_and_stays_inside_the_page():
     assert re.search(r"\.help-pop\{[^}]*max-width|\.help-pop\{[^}]*width:min\(320px,80vw\)", CSS)
     assert ".help-pop[hidden]{display:none}" in CSS
+
+
+def test_pointer_click_opens_rather_than_toggles():
+    # A tap fires mouseenter, focus, click; a toggling click would close what those just opened.
+    body = JS[JS.index("function helpIcon"):JS.index("function settingRow")]
+    click = body[body.index("addEventListener('click'"):]
+    click = click[:click.index("\n")]
+    assert "e.detail===0" in click and ":true)" in click
+    assert "open(btn.getAttribute('aria-expanded')!=='true')" not in click
