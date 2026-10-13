@@ -5,8 +5,9 @@
   hdash dash [--print]   print the dashboard URL and open it in a browser (what `hv dash` forwards to)
 
 `serve` answers on 127.0.0.1 for a request whose Host is the loopback address it is bound to. It has no write route;
-every non-GET request still has to pass the Host and Origin checks and carry the CSRF token (`/api/csrf`) before a
-route is even looked up (P3), so the first write lands behind the guard.
+every non-GET request still has to pass the loopback-source, Host and Origin checks, carry no `Tailscale-*` header and
+carry the CSRF token (`/api/csrf`) before a route is even looked up (P3). The one write route is `POST /api/settings`,
+which runs `hconfig set` (the value on stdin, never argv); hdash signs nothing and never holds the owner passphrase.
 The page's `/api/*` calls are mapped to the core's read routes:
 
   overview, tags, related, audit, peers, verify, search, item   -> signed `GET /v1/<route>` (the module API;
@@ -16,8 +17,10 @@ The page's `/api/*` calls are mapped to the core's read routes:
   modules, module                                               -> answered here, for this node only (no `?node=`):
                                                                      `hive-mind module list --json` plus the core's
                                                                      doctor cache; a web request never starts module code
+  settings                                                      -> `hconfig list --json`, this node only: the records
+                                                                     the config forms render (hdash reads no config file)
 
-Nothing is written to the hive and no owner key is touched. Standard library only; the core's module client is
+Nothing is written to the hive by hdash itself and no owner key is touched. Standard library only; the core's module client is
 imported from the core checkout (`HIVE_HOME`) so there is one Ed25519 in the system.
 """
 
@@ -59,7 +62,7 @@ PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.ht
          "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css"}
 V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
 DAEMON_ONLY = ("status", "telemetry", "entities")
-LOCAL_ROUTES = ("modules", "module")     # answered by hdash itself (Settings > Modules and the module page), this node only
+LOCAL_ROUTES = ("modules", "module", "settings")     # answered by hdash itself (Settings and the module page), this node only
 API_ROUTES = V1_READS + DAEMON_ONLY + LOCAL_ROUTES
 MODULE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
 DOCTOR_CACHE_DIR = ".module-doctor"      # the core's cache beside the hive (hive_modules.DOCTOR_CACHE_DIR)
@@ -69,6 +72,18 @@ MANIFEST_MAX_BYTES = 1024 * 1024
 CSRF_HEADER = "X-HDash-CSRF"
 CSRF_ROUTE = "/api/csrf"
 MAX_BODY = 64 * 1024
+OWNER_ENV = ("HIVE_OWNER_PASSPHRASE", "HIVE_OWNER_KEY_PASSPHRASE", "HIVE_OWNER_SEED")   # never reach a child of ours
+SETTING_ID = re.compile(r"(?:node|core|x-[a-z0-9][a-z0-9_-]{0,39}):[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+SETTING_PREFIX = re.compile(r"(?:node|core|x-[a-z0-9][a-z0-9_-]{0,39})?:?\Z")
+SETTING_CLASSES = ("node", "module", "governed")
+VALUE_MAX = 4096
+HCONFIG_TIMEOUT = 90
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+RECORD_KEYS = ("id", "class", "scope", "type", "default", "values", "min", "max", "description", "secret", "identifying",
+               "visibility", "writable_by", "write_via", "warnings", "set", "source", "value", "set_by", "env", "template",
+               "instance_of")
+ERROR_STATUS = {"unknown-key": 404, "validation": 400, "secret-on-argv": 400, "scope": 403, "read-only": 403,
+                "owner-only": 403, "env-overridden": 409, "owner-locked": 409, "not-installed": 409, "core-failed": 502}
 
 
 def hive_home():
@@ -283,6 +298,104 @@ def module_view(name, rows=None, home=None, now=None, base=None):
     return out
 
 
+def hconfig_argv():
+    """The `hconfig` command on PATH. Raises RuntimeError saying how to install it when it is missing."""
+    exe = shutil.which("hconfig")
+    if not exe:
+        raise RuntimeError("hconfig is not installed on this node: hive-mind module add hconfig")
+    return [exe]
+
+
+def run_hconfig(args, stdin_text=None, timeout=HCONFIG_TIMEOUT):
+    """Run `hconfig <args>` (argv, no shell): (exit code, parsed JSON object). A value goes in `stdin_text`, never in
+    `args`. The owner variables are gone from the child's environment, and `HCONFIG_SOURCE=hdash` marks its audit line."""
+    env = {k: v for k, v in os.environ.items() if k not in OWNER_ENV}
+    env["HCONFIG_SOURCE"] = "hdash"
+    try:
+        p = subprocess.run(hconfig_argv() + list(args), input=stdin_text, capture_output=True, text=True, env=env,
+                           stdin=None if stdin_text is not None else subprocess.DEVNULL, timeout=timeout)
+        doc = json.loads(p.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"hconfig did not answer: {type(e).__name__}") from e
+    if not isinstance(doc, dict):
+        raise RuntimeError(f"hconfig did not answer (exit {p.returncode})")
+    return p.returncode, doc
+
+
+def _value_view(v):
+    return clean_text(v, 400) if isinstance(v, str) else (v if isinstance(v, (bool, int, float)) or v is None else
+                                                            [clean_text(x, 200) for x in v[:100]] if isinstance(v, list) else None)
+
+
+def record_view(rec):
+    """One hconfig record as the forms render it: the known fields only, every string cleaned, and a secret's value
+    never shown whatever hconfig sent."""
+    out = {}
+    for k in RECORD_KEYS:
+        if k not in rec:
+            continue
+        v = rec[k]
+        if k in ("warnings",):
+            out[k] = [clean_text(w, 300) for w in v[:10]] if isinstance(v, list) else []
+        elif k == "set_by":
+            out[k] = ({kk: clean_text(v.get(kk, ""), 80) for kk in ("device_id", "ts", "sid")} if isinstance(v, dict) else None)
+        elif k == "values":
+            out[k] = [clean_text(x, 100) for x in v[:100]] if isinstance(v, list) else []
+        else:
+            out[k] = _value_view(v)
+    if out.get("secret") is True:
+        out["value"] = "********" if out.get("set") else None
+    return out
+
+
+def settings_view(query):
+    """`hconfig list [PREFIX] [--class C] --json` as records for the forms. Raises RuntimeError saying why not."""
+    qs = parse_qs(query)
+    prefix, cls = qs.get("prefix", [""])[0], qs.get("class", [""])[0]
+    if not SETTING_PREFIX.match(prefix) or cls not in ("",) + SETTING_CLASSES:
+        return 400, {"error": "bad prefix or class"}
+    rc, doc = run_hconfig(["list", "--json"] + (["--class", cls] if cls else []) + (["--", prefix] if prefix else []))
+    if rc != 0 or doc.get("ok") is not True or not isinstance(doc.get("keys"), list):
+        err = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+        return 502, {"error": clean_text(err.get("message") or f"hconfig list failed (exit {rc})", 200)}
+    warns = doc.get("warnings") if isinstance(doc.get("warnings"), list) else []
+    return 200, {"schema": 1, "keys": [record_view(r) for r in doc["keys"] if isinstance(r, dict)],
+                 "warnings": [clean_text(w, 300) for w in warns[:20]]}
+
+
+_write_lock = __import__("threading").Lock()     # one settings write at a time (hconfig also holds its own flock)
+
+
+def write_setting(obj):
+    """`POST /api/settings` {id, value}: run `hconfig set` with the value on stdin. The caller (the handler) has already
+    passed the loopback, Host, Origin, CSRF and size checks. A `core:` key and `node:owner_quota` are owner-only and start
+    nothing; a governed module key is signed by the core through the owner-unlock agent, or comes back `owner-locked`
+    (hdash never signs and never reads a passphrase)."""
+    key, value = obj.get("id"), obj.get("value")
+    if not (isinstance(key, str) and SETTING_ID.match(key)) or not isinstance(value, str):
+        return 400, {"ok": False, "error": {"code": "validation", "message": "id and a string value are required"}}
+    if len(value) > VALUE_MAX or any(unicodedata.category(c) in ("Cc", "Zl", "Zp") for c in value):
+        return 400, {"ok": False, "error": {"code": "validation", "message": "the value is too long or has control characters"}}
+    if key.startswith("core:") or key == "node:owner_quota":
+        return 403, {"ok": False, "error": {"code": "owner-only", "id": key,
+                                            "message": "this key is changed by the owner on the operator's terminal, not here",
+                                            "hint": "see its write_via line"}}
+    with _write_lock:
+        try:
+            rc, doc = run_hconfig(["set", "--json", "--stdin", "--non-interactive", "--", key], stdin_text=value + "\n")
+        except RuntimeError as e:
+            return 502, {"ok": False, "error": {"code": "core-failed", "id": key, "message": clean_text(e, 200)}}
+    if rc == 0 and doc.get("ok") is True and isinstance(doc.get("key"), dict):
+        return 200, {"ok": True, "id": key, "changed": doc.get("changed") is True, "key": record_view(doc["key"]),
+                     "warnings": [clean_text(w, 300) for w in (doc.get("warnings") or [])[:10]] if isinstance(doc.get("warnings"), list) else []}
+    err = doc.get("error") if isinstance(doc.get("error"), dict) else {}
+    code = err.get("code") if err.get("code") in ERROR_STATUS else "core-failed"
+    status = 409 if rc == 5 else ERROR_STATUS[code]
+    return status, {"ok": False, "error": {"code": "owner-locked" if rc == 5 else code, "id": key,
+                                           "message": clean_text(err.get("message", "refused"), 300),
+                                           "hint": clean_text(err.get("hint", ""), 400)}}
+
+
 def local_routes():
     def modules(query):
         try:
@@ -297,7 +410,12 @@ def local_routes():
         except RuntimeError as e:
             return 502, {"error": str(e)}
         return (200, view) if view else (404, {"error": "no such module"})
-    return {"modules": modules, "module": module}
+    def settings(query):
+        try:
+            return settings_view(query)
+        except RuntimeError as e:
+            return 502, {"error": clean_text(e, 200)}
+    return {"modules": modules, "module": module, "settings": settings}
 
 
 class Gateway:
@@ -306,7 +424,7 @@ class Gateway:
 
     def __init__(self, v1, daemon, local=None, writes=None):
         self.v1, self.daemon, self.local = v1, daemon, local or {}
-        self.writes = writes or {}          # name -> callable(obj) -> (status, obj); none exist yet (P3 guards them first)
+        self.writes = writes or {}          # name -> callable(obj) -> (status, obj); the handler guards them first
 
     def write(self, name, obj):
         fn = self.writes.get(name)
@@ -333,7 +451,8 @@ class Gateway:
 def make_handler(gateway, port, csrf_token=None):
     """`csrf_token` is fixed only by tests; a server makes its own per process. Every non-GET route passes, in
     order, the Host check (DNS rebinding), an `Origin` equal to this listener's own origin (required, not optional),
-    `Sec-Fetch-Site: same-origin` when the browser sends one, the CSRF token header (constant-time compare), a JSON
+    `Sec-Fetch-Site: same-origin` when the browser sends one, no `Tailscale-*` header (a Serve viewer arrives on loopback;
+    writes stay on the device), a loopback source address, the CSRF token header (constant-time compare), a JSON
     content type and a bounded JSON object body. Only then is a write route looked up, so a probe that fails any
     check learns nothing about which writes exist."""
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
@@ -380,6 +499,8 @@ def make_handler(gateway, port, csrf_token=None):
             if not self._origin_ok(False) or not self._site_ok(False):
                 return self._refuse(403, "forbidden origin")
             u = urlparse(self.path)
+            if u.path == "/api/settings" and any(k.lower().startswith("tailscale-") for k in self.headers.keys()):
+                return self._refuse(403, "forbidden: not a local request")   # settings are the operator's, never a Serve viewer's
             if u.path == CSRF_ROUTE:
                 return self._send(200, {"token": token})
             if u.path in PAGES:
@@ -417,10 +538,14 @@ def make_handler(gateway, port, csrf_token=None):
             self._send(code, {"error": msg}, extra=(("Connection", "close"),) + ((("Allow", "GET, HEAD"),) if code == 405 else ()))
 
         def _mutate(self):
+            if self.client_address[0] not in LOOPBACK:
+                return self._deny(403, "loopback only")                # gate 6a: no peer or proxy source, whatever else is right
             if (self.headers.get("Host") or "").lower() not in allowed:
                 return self._deny(403, "forbidden host")
             if not self._origin_ok(True) or not self._site_ok(True):
                 return self._deny(403, "forbidden origin")
+            if any(k.lower().startswith("tailscale-") for k in self.headers.keys()):
+                return self._deny(403, "forbidden: not a local request")   # gate 6c: a Tailscale Serve viewer arrives on loopback
             if not hmac.compare_digest((self.headers.get(CSRF_HEADER) or "").encode(), token.encode()):
                 return self._deny(403, "missing or wrong CSRF token")
             if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
@@ -471,7 +596,7 @@ def cmd_serve(args):
         return 1
     dport = daemon_port()
     gateway = Gateway(lambda p, q: client.request("GET", p, q),
-                      lambda p, q: daemon_get(p, q, dport), local_routes())
+                      lambda p, q: daemon_get(p, q, dport), local_routes(), {"settings": write_setting})
     srv = make_server(gateway, port)
     print(f"hdash: serving http://127.0.0.1:{port}/", flush=True)
     try:
