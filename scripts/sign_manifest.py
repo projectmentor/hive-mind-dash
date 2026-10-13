@@ -2,12 +2,14 @@
 """Regenerate and sign `module.json`, or check it.
 
     HDASH_PUBLISHER_SEED=<64 hex> python3 -I scripts/sign_manifest.py [--core DIR]
+    python3 -I scripts/sign_manifest.py --seed-file PATH [--core DIR]     # PATH: a 0600 file of 64 hex characters
     python3 -I scripts/sign_manifest.py --check [--core DIR]
 
 Signing rewrites `files` (every `git ls-files` path except the manifest and its signature, with its sha256),
 takes `publisher` from the seed, keeps every other field of the committed manifest, and writes `module.json`
-and `module.json.sig` (Ed25519 over the exact manifest bytes). The seed comes from the environment only, never
-from a file in the tree and never from the command line, and is never printed.
+and `module.json.sig` (Ed25519 over the exact manifest bytes). The seed comes from the environment or from `--seed-file PATH` (never from
+a file in the tree, never on the command line), and is never printed. The file must be a regular file you own, not a
+symlink, with no group or other permission bits (0600 or stricter); both sources at once are refused.
 
 `--check` needs no seed. It verifies the committed manifest the way `hive-mind module add` does: well-formed,
 signature valid under the manifest's own publisher, every tracked file listed with a matching digest, nothing
@@ -22,12 +24,15 @@ import base64
 import hashlib
 import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST, SIGNATURE = "module.json", "module.json.sig"
+ENV_NAME = "HDASH_PUBLISHER_SEED"
+
 DEFAULTS = {
     "name": "hdash",
     "version": "0.1.0",
@@ -82,14 +87,42 @@ def render(manifest):
     return (json.dumps(manifest, indent=1, sort_keys=True) + "\n").encode()
 
 
-def sign(root, core):
-    ed25519 = load_ed25519(core)
-    seed_hex = os.environ.get("HDASH_PUBLISHER_SEED", "").strip()
+def read_seed_file(path):
+    """The seed hex from PATH, or die. Opens without following a symlink and checks the open file, not the name."""
     try:
-        seed = bytes.fromhex(seed_hex)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError as e:
+        die(f"--seed-file cannot be opened (a symlink is refused): {e.strerror}")
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            die("--seed-file is not a regular file")
+        if st.st_uid != os.geteuid():
+            die("--seed-file is not owned by the current user")
+        if st.st_mode & 0o177:
+            die("--seed-file must be mode 0600 or stricter (no group or other access, no execute)")
+        return os.read(fd, 4096).decode("ascii", "replace")
+    finally:
+        os.close(fd)
+
+
+def read_seed(seed_file):
+    """The 32-byte seed from --seed-file or HDASH_PUBLISHER_SEED; both at once is refused."""
+    if seed_file is not None and ENV_NAME in os.environ:
+        die("pass the seed with --seed-file or HDASH_PUBLISHER_SEED, not both")
+    seed_hex, source = (read_seed_file(seed_file), "the --seed-file contents") if seed_file is not None else (
+        os.environ.get(ENV_NAME, ""), ENV_NAME)
+    try:
+        seed = bytes.fromhex(seed_hex.strip())
         assert len(seed) == 32
     except (ValueError, AssertionError):
-        die("HDASH_PUBLISHER_SEED must be 64 hex characters (a 32-byte seed)")
+        die(f"{source} must be 64 hex characters (a 32-byte seed)")
+    return seed
+
+
+def sign(root, core, seed_file=None):
+    ed25519 = load_ed25519(core)
+    seed = read_seed(seed_file)
     try:
         old = json.loads((root / MANIFEST).read_text())
     except (OSError, ValueError):
@@ -130,10 +163,16 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--check", action="store_true", help="verify the committed manifest; needs no seed")
     ap.add_argument("--core", help="core checkout holding ed25519.py (default HDASH_CORE, then HIVE_HOME)")
+    ap.add_argument("--seed-file", metavar="PATH", help=f"read the publisher seed from this 0600 file instead of {ENV_NAME}")
     ap.add_argument("--root", default=str(ROOT), help="the module tree (default: this repository)")
     args = ap.parse_args(argv)
     root = Path(args.root)
-    (check if args.check else sign)(root, args.core)
+    if args.seed_file is not None and args.check:
+        die("--seed-file is for signing; --check needs no seed")
+    if args.check:
+        check(root, args.core)
+    else:
+        sign(root, args.core, args.seed_file)
 
 
 if __name__ == "__main__":
