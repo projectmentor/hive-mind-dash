@@ -17,6 +17,7 @@ hdash = importlib.util.module_from_spec(_spec)
 _loader.exec_module(hdash)
 
 TOKEN = "t" * 43
+LAUNCH = "l" * 43
 
 
 @pytest.fixture
@@ -30,7 +31,7 @@ def srv():
     gw = hdash.Gateway(lambda p, q: (200, {}), lambda p, q: (200, {}), {}, {"echo": echo})
     server = hdash.make_server(gw, 0)
     port = server.server_address[1]
-    server.RequestHandlerClass = hdash.make_handler(gw, port, csrf_token=TOKEN)
+    server.RequestHandlerClass = hdash.make_handler(gw, port, csrf_token=TOKEN, launch_token=LAUNCH)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield port, seen
     server.shutdown()
@@ -127,10 +128,11 @@ def test_reads_are_refused_from_a_foreign_origin_and_allowed_without_one(srv):
 
 def test_csrf_token_is_served_to_the_page_only(srv):
     port, _ = srv
-    code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None})
+    lh = {hdash.LAUNCH_HEADER: LAUNCH}
+    code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None, **lh})
     assert code == 200 and json.loads(body) == {"token": TOKEN}
-    assert req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": "http://evil.example"})[0] == 403
-    assert req(port, "GET", hdash.CSRF_ROUTE, None, host="evil.example")[0] == 403
+    assert req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": "http://evil.example", **lh})[0] == 403
+    assert req(port, "GET", hdash.CSRF_ROUTE, None, lh, host="evil.example")[0] == 403
 
 
 def test_options_is_never_a_cors_yes(srv):
@@ -142,7 +144,7 @@ def test_options_is_never_a_cors_yes(srv):
 def _serve(handler_factory_gw):
     server = hdash.make_server(handler_factory_gw, 0)
     port = server.server_address[1]
-    server.RequestHandlerClass = hdash.make_handler(handler_factory_gw, port)
+    server.RequestHandlerClass = hdash.make_handler(handler_factory_gw, port, launch_token=LAUNCH)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, port
 
@@ -153,7 +155,7 @@ def test_each_server_makes_its_own_token():
     try:
         tokens = []
         for _, port in servers:
-            code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None})
+            code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None, hdash.LAUNCH_HEADER: LAUNCH})
             assert code == 200
             tokens.append(json.loads(body)["token"])
         assert tokens[0] != tokens[1] and all(len(t) >= 32 for t in tokens)

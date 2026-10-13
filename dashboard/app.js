@@ -66,7 +66,7 @@ function goView(v){state.view=v;state.node=null;state.detail=null;setNav(null);r
 function render(){
   if(state.detail) return renderDetail();
   if(state.node) return renderNode();
-  ({overview,corpus,hive,telemetry,status,audit,modules,modulePage})[state.view]();
+  ({overview,corpus,hive,telemetry,status,audit,modules,modulePage,settingsNode})[state.view]();
 }
 
 /* ---------- modals ---------- */
@@ -504,13 +504,87 @@ async function modulePage(){
   put($('#app'),html`<div class="crumb"><button class="back" onclick=${()=>goTab('modules')}>‹ Modules</button><span class="who">${MP.name}</span></div><div id="mpbody">${spin()}</div>`);
   let r; try{ r=await getJSON('/api/module?name='+encodeURIComponent(MP.name)); }catch(e){ put($('#mpbody'),empty('module unavailable')); return; }
   const m=r.module, ui=r.ui, acts=(ui&&ui.actions)||[];
-  const tabs=[['overview','Overview'],['health','Health'],...(acts.length?[['actions','Actions']]:[])];
+  const tabs=[['overview','Overview'],['health','Health'],['config','Config'],...(acts.length?[['actions','Actions']]:[])];
   if(!tabs.some(t=>t[0]===MP.tab)) MP.tab='overview';
   const kv=(k,v)=>html`<tr><td class="c-dim">${k}</td><td>${v}</td></tr>`;
   const body={
     overview:()=>html`${ui&&ui.summary?html`<p>${ui.summary}</p>`:null}<table><tbody>${kv('Version',m.version)}${kv('Publisher',html`<span class="mono">${m.publisher}</span>`)}${kv('Signature',m.signature)}${kv('Service',m.service)}${kv('Device',m.device)}${kv('Trust',m.trust)}${kv('Quota use',m.quota_use)}${m.cli?kv('Command',html`<span class="mono">${m.cli}</span>`):null}</tbody></table>${m.problem?html`<div class="note c-warn">${m.problem}</div>`:null}${ui?null:html`<div class="note">This module declares no page of its own${m.signature==='valid'?'':' (its signature is not valid here, so its manifest is not read)'}.</div>`}`,
     health:()=>healthBody(m.doctor),
+    config:()=>settingsPanel('x-'+MP.name+':'),
     actions:()=>html`<div class="note">Run these on this node's terminal. The dashboard runs nothing; an owner action is also signed there, never here.</div>${acts.map(a=>html`<div class="panel"><h2>${a.label||a.id}${a.owner?html` <span class="chip">owner</span>`:null}</h2>${a.confirm?html`<p class="c-dim">${a.confirm}</p>`:null}${cmdBlock(a.command)}</div>`)}`,
   };
   put($('#mpbody'),html`<div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===MP.tab?' active':'')} onclick=${()=>{MP.tab=t[0];modulePage();}}>${t[1]}</button>`)}</div><div class="panel">${body[MP.tab]()}</div>`);
+}
+
+/* ---------- Settings forms: rendered from `hconfig list` records; saved by POST /api/settings (hconfig set) ---------- */
+let CSRF=null;
+/* `hv dash` opens /#k=<launch token>; keep it for this tab only and drop it from the address bar */
+(()=>{ const m=/^#k=([\w-]+)$/.exec(location.hash); if(m){ try{ sessionStorage.setItem('hdash-k',m[1]); }catch(e){} history.replaceState(null,'',location.pathname+location.search); } })();
+const csrfToken=async()=>{
+  if(!CSRF){
+    let k=''; try{ k=sessionStorage.getItem('hdash-k')||''; }catch(e){}
+    const r=await fetch('/api/csrf',{headers:{'X-HDash-Launch':k}});
+    if(!r.ok) throw new Error('Open the dashboard with `hv dash` to save settings.');
+    CSRF=(await r.json()).token;
+  }
+  return CSRF;
+};
+async function saveSetting(id,value){
+  const post=async()=>fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-HDash-CSRF':await csrfToken()},body:JSON.stringify({id,value})});
+  let r=await post();
+  if(r.status===403){ CSRF=null; r=await post(); }   // the server restarted and made a new token
+  let j={}; try{ j=await r.json(); }catch(e){}
+  return {status:r.status,body:j};
+}
+const SRC_LABEL={default:'default',node:'this node','fleet-node':'fleet (this device)',fleet:'fleet',env:'environment'};
+const showVal=v=>v==null?'—':Array.isArray(v)?v.join(', '):String(v);
+function settingInput(r){
+  const cur=r.secret?'':r.set?showVal(r.value):showVal(r.default==null?'':r.default).replace(/^—$/,'');
+  if(r.type==='bool') return html`<select class="sv">${['true','false'].map(o=>html`<option value=${o} selected=${o===String(r.set?r.value:r.default)}>${o}</option>`)}</select>`;
+  if(r.type==='enum'&&Array.isArray(r.values)) return html`<select class="sv">${r.values.map(o=>html`<option value=${o} selected=${o===String(r.set?r.value:r.default)}>${o}</option>`)}</select>`;
+  return html`<input class="sv" type=${r.secret?'password':'text'} value=${cur} placeholder=${r.secret?(r.set?'set — type to replace':'not set'):''} autocomplete="off" maxlength="4096">`;
+}
+function settingRow(r){
+  const id=r.id, src=SRC_LABEL[r.source]||(r.source||'unset');
+  const meta=html`<div class="c-dim fs12">${r.description||''}${r.min!=null||r.max!=null?` (${showVal(r.min)} .. ${showVal(r.max)})`:''}${r.identifying?' · identifying':''}${r.secret?' · secret':''}</div>${(r.warnings||[]).map(w=>html`<div class="c-accent fs12">${w}</div>`)}`;
+  const head=html`<td><span class="mono">${id}</span>${meta}</td><td><span class="chip">${src}</span>${r.set_by&&r.set_by.ts?html`<div class="c-dim fs12">set ${r.set_by.ts}</div>`:null}</td>`;
+  if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: set a concrete key with <span class="mono">hconfig set</span></td></tr>`;
+  if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${showVal(r.set?r.value:r.default)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
+  if(r.source==='env') return html`<tr>${head}<td>${showVal(r.value)}</td><td class="c-dim fs12">Overridden by <span class="mono">${r.env||'an environment variable'}</span>; unset it to edit this key.</td></tr>`;
+  const tr=html`<tr>${head}<td>${settingInput(r)}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
+  return wireRow(tr,r);
+}
+function wireRow(frag,r){
+  const msg=frag.querySelector('.sv-msg'), btn=frag.querySelector('.sv-save'), inp=frag.querySelector('.sv');
+  const say=(cls,t,hint)=>{ msg.className='sv-msg fs12 '+cls; put(msg,t,hint?html`<div class="c-dim">${hint}</div>`:null); };
+  if(r.writable_by==='owner') say('c-dim','Signed by the owner key through the unlock agent.');
+  btn.onclick=async()=>{
+    btn.disabled=true; say('c-dim','saving…');
+    try{
+      const {status,body}=await saveSetting(r.id,inp.value);
+      if(body.ok){ say('c-ok',body.changed?'Saved.':'Nothing to change.'); if(inp.type==='password') inp.value=''; }
+      else{
+        const e=body.error||{};
+        if(e.code==='owner-locked') say('c-warn','The owner key is locked.',html`${e.hint||'Unlock it on your terminal, then save again:'} ${cmdBlock('hive-mind owner unlock --module '+(r.id.slice(2).split(':')[0]))}`);
+        else say('c-warn',e.message||('refused ('+status+')'),e.hint);
+      }
+    }catch(err){ say('c-warn',(err&&err.message)||'could not reach the dashboard service'); }
+    btn.disabled=false;
+  };
+  return frag;
+}
+const settingsTable=keys=>keys.length?html`<table><thead><tr><th>Key</th><th>Source</th><th>Value</th><th></th></tr></thead><tbody>${keys.map(settingRow)}</tbody></table>`:empty('No settings.');
+function settingsPanel(prefix,cls){
+  const box=html`<div>${spin()}</div>`.firstElementChild;
+  getJSON('/api/settings?'+new URLSearchParams(Object.assign({prefix},cls?{class:cls}:{}))).then(r=>{
+    const fleet=r.keys.filter(k=>k.class==='governed'), nodeK=r.keys.filter(k=>k.class!=='governed');
+    put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
+      ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}
+      ${nodeK.length?html`<h3>Per-node</h3>${settingsTable(nodeK)}`:null}${fleet.length?html`<h3>Fleet (owner-signed)</h3>${settingsTable(fleet)}`:null}${!r.keys.length?empty('No settings.'):null}`);
+  }).catch(()=>put(box,empty('settings unavailable — is hconfig installed on this node? (hive-mind module add hconfig)')));
+  return box;
+}
+async function settingsNode(){
+  put($('#app'),html`<div class="crumb"><span class="who">Settings › Node</span></div>`,
+    html`<div class="panel"><h2>Node</h2>${settingsPanel('node:','node')}<h2>Core governed keys</h2>${settingsPanel('core:','governed')}</div>`);
 }
