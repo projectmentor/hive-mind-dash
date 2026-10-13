@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import json
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -189,7 +190,13 @@ def test_write_is_503_when_every_slot_is_busy_and_recovers():
         gate.set()
         for w in workers:
             w.join(10)
-        assert results == [200] * hdash.MAX_CONCURRENT
-        assert req(port, path="/api/slow")[0] == 200
+        # the 200 is sent before the slot is released, so poll for recovery
+        deadline = time.monotonic() + 2
+        recovered = req(port, path="/api/slow")[0]
+        while recovered != 200 and time.monotonic() < deadline:
+            time.sleep(0.02)
+            recovered = req(port, path="/api/slow")[0]
         server.shutdown()
         server.server_close()
+    assert results == [200] * hdash.MAX_CONCURRENT
+    assert recovered == 200
