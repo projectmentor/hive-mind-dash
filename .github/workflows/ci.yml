@@ -11,7 +11,7 @@ permissions:
 env:
   # `min_core` is "4.0", so the core must report contract 4.0: until the contract bump (hive-mind#462) is on release/4.0, use its
   # branch. Flip this to release/4.0 when #462 merges.
-  CORE_REF: implementer/4.0-contract-bump
+  CORE_REF: main
   CORE_OWNER: projectmentor      # split so `module check`'s identifying-data lint does not flag this file
   CORE_REPO: hive-mind
 
