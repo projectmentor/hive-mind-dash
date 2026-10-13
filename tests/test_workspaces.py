@@ -100,3 +100,53 @@ def test_status_envelope_is_cached_between_page_loads(monkeypatch):
     assert len(n) == 1 and n[0] == ["hm", "module", "status", "w", "--json"]
     hdash.module_status_envelope("w", now=100 + hdash.STATUS_TTL + 1)
     assert len(n) == 2
+
+
+def test_spend_shows_quotas_lowered_by_a_valid_manifest_and_fills_its_slot(tmp_path):
+    ui = {"schema": 1, "panels": [{"id": "wb", "widget": "table", "title": "wake budget", "from": "status", "path": "seats"}],
+          "slots": {"spend": ["wb"]}}
+    (tmp_path / "hwatch").mkdir()
+    (tmp_path / "hwatch" / "module.json").write_text(json.dumps({"name": "hwatch", "ui": ui, "quota": {"per_hour": 10, "per_day": 99999, "lifetime": True}}))
+    fn, seen = calls()
+    w = hdash.workspace_view("spend", rows=[row()], home=tmp_path, envelope_fn=fn, base=tmp_path)
+    q = w["quotas"][0]
+    assert q["per_hour"] == 10 and q["per_day"] == 500 and q["lifetime"] == 50000 and q["use"] == "1/60"   # a raise or a bool is ignored
+    assert [p["id"] for p in w["panels"]] == ["wb"] and seen == ["hwatch"]
+    assert any("hrouter" in n for n in w["notes"])                       # the empty hrouter slot says so
+
+
+def test_spend_ignores_the_manifest_of_a_module_without_a_valid_signature(tmp_path):
+    (tmp_path / "x").mkdir()
+    (tmp_path / "x" / "module.json").write_text(json.dumps({"quota": {"per_hour": 1}}))
+    w = hdash.workspace_view("spend", rows=[row("x", "invalid")], home=tmp_path, envelope_fn=lambda n: None, base=tmp_path)
+    assert w["quotas"][0]["per_hour"] == 60
+
+
+def test_governance_lists_core_policy_and_module_admission(tmp_path):
+    pol = [{"id": "core:forget_writers", "value": "owner"}]
+    w = hdash.workspace_view("governance", rows=[row(), row("b", "invalid")], home=tmp_path, envelope_fn=lambda n: None,
+                             base=tmp_path, policy_fn=lambda: (pol, ""))
+    assert w["policy"] == pol and [m["device"] for m in w["modules"]] == ["admitted", "admitted"]
+    assert any("Refusals" in n for n in w["notes"]) and "quota_use" not in w["modules"][0]
+
+
+def test_governance_says_why_when_hconfig_does_not_answer(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("hconfig did not answer: OSError")
+    monkeypatch.setattr(hdash, "run_hconfig", boom)
+    w = hdash.workspace_view("governance", rows=[], home=tmp_path, envelope_fn=lambda n: None, base=tmp_path)
+    assert w["policy"] == [] and "hconfig" in w["policy_note"]
+
+
+def test_core_policy_keeps_only_known_fields(monkeypatch):
+    recs = [{"id": "core:k", "value": "v", "secret": False, "evil": "x", "description": "d‮"}]
+    monkeypatch.setattr(hdash, "run_hconfig", lambda a: (0, {"ok": True, "keys": recs}))
+    pol, why = hdash.core_policy()
+    assert pol == [{"id": "core:k", "value": "v", "description": "d"}] and why == ""
+
+
+def test_spend_and_governance_are_routes_and_nav_buttons():
+    for n in ("spend", "governance"):
+        assert hdash.local_routes()["workspace"]("name=" + n)[0] in (200, 502)
+        assert f'data-v="{n}"' in (ROOT / "dashboard" / "index.html").read_text()
+        assert f"workspace('{n}')" in (ROOT / "dashboard" / "app.js").read_text()

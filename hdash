@@ -17,7 +17,7 @@ The page's `/api/*` calls are mapped to the core's read routes:
   modules, module                                               -> answered here, for this node only (no `?node=`):
                                                                      `hive-mind module list --json` plus the core's
                                                                      doctor cache; a web request never starts module code
-  workspace                                                     -> the Agents and Trust pages (defined here, never by a module):
+  workspace                                                     -> the Agents, Trust, Spend and Governance pages (defined here, never by a module):
                                                                      the panels the installed, signature-valid modules
                                                                      declare for a slot; read-only, this node only
   settings                                                      -> `hconfig list --json`, this node only: the records
@@ -379,7 +379,16 @@ WORKSPACES = {
     "agents": {"title": "Agents", "question": "What are my agents doing, and is anything stuck?",
                "empty": {"hrouter": "hrouter has no data yet, so its routing decisions are not shown."}},
     "trust": {"title": "Trust", "question": "Is this install genuine, and can I verify each claim?", "empty": {}},
+    "spend": {"title": "Spend & limits", "question": "What is this costing, and what stops it running away?",
+              "empty": {"hrouter": "hrouter cost estimates are not available yet, so its slot is empty."}},
+    "governance": {"title": "Governance", "question": "What rules are in force, and what did they refuse?", "empty": {}},
 }
+# The core's module quota defaults (hive_modules.QUOTA_DEFAULTS); a manifest may only ask for less.
+QUOTA_DEFAULTS = {"per_hour": 60, "per_day": 500, "entry_bytes": 16 * 1024, "lifetime": 50000}
+GOVERNANCE_NOTES = (
+    "Refusals: the projection's refusals have no read route yet. `hv doctor` counts the entries a journal holds that "
+    "the projection no longer honours, and `hv audit` lists the journal.",
+)
 STATUS_TTL = 20            # seconds a module's status envelope is reused: a page reload must not rerun module code
 STATUS_MAX_BYTES = 64 * 1024
 PANEL_ROWS, PANEL_COLS, SCRUB_DEPTH = 100, 16, 5
@@ -497,8 +506,8 @@ def slot_panels(row, slot, envelope_fn, home, base=None, now=None):
     return out
 
 
-def workspace_view(name, rows=None, home=None, envelope_fn=None, base=None, now=None):
-    """`/api/workspace?name=agents|trust`. Read-only, this node only. None for an unknown workspace."""
+def workspace_view(name, rows=None, home=None, envelope_fn=None, base=None, now=None, policy_fn=None):
+    """`/api/workspace?name=agents|trust|spend|governance`. Read-only, this node only. None for an unknown workspace."""
     ws = WORKSPACES.get(name)
     if ws is None:
         return None
@@ -512,7 +521,40 @@ def workspace_view(name, rows=None, home=None, envelope_fn=None, base=None, now=
         out["modules"] = [{**{k: v for k, v in _row_view(r).items() if k in ("name", "version", "publisher", "signature", "trust", "problem")},
                            "doctor": read_doctor_cache(home, r["name"], now)} for r in rows]
         out["claims"] = [{"claim": c, "verify": v} for c, v in TRUST_CLAIMS]
+    if name == "spend":
+        out["quotas"] = quota_rows(rows, base)
+    if name == "governance":
+        policy, why = (policy_fn or core_policy)()
+        out["policy"], out["policy_note"] = policy, why
+        out["modules"] = [{k: v for k, v in _row_view(r).items() if k in ("name", "publisher", "signature", "device", "trust", "problem")}
+                          for r in rows]
+        out["notes"] = out["notes"] + list(GOVERNANCE_NOTES)
     return out
+
+
+def quota_rows(rows, base=None):
+    """Spend: each module's limits (the core's defaults, lowered by its signed manifest) beside its use. An owner's raise
+    lives in the core's state, not in the manifest, so it is not shown: the row's `quota_use` is the core's own count."""
+    out = []
+    for r in rows:
+        ask = read_manifest(r["name"], base).get("quota") if r.get("signature") == "valid" else None
+        ask = ask if isinstance(ask, dict) else {}
+        lim = {k: (ask[k] if isinstance(ask.get(k), int) and not isinstance(ask.get(k), bool) and 0 <= ask[k] <= d else d)
+               for k, d in QUOTA_DEFAULTS.items()}
+        out.append({"module": r["name"], **lim, "use": clean_text(r.get("quota_use", ""), 80) if isinstance(r.get("quota_use"), str) else None})
+    return out
+
+
+def core_policy():
+    """Governance: the core's own policy keys, from `hconfig list core:` (read-only records), or ([], why)."""
+    try:
+        rc, doc = run_hconfig(["list", "--json", "--", "core:"])
+    except RuntimeError as e:
+        return [], clean_text(e, 200)
+    if rc != 0 or doc.get("ok") is not True or not isinstance(doc.get("keys"), list):
+        return [], "hconfig did not list the core's policy keys"
+    return [{k: v for k, v in record_view(r).items() if k in ("id", "value", "default", "source", "description", "write_via")}
+            for r in doc["keys"][:100] if isinstance(r, dict)], ""
 
 
 def hconfig_argv():
