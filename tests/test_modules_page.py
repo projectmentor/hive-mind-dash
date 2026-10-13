@@ -85,12 +85,12 @@ def manifest(base, name, mf):
 
 def test_module_page_reads_ui_only_for_a_valid_signature(tmp_path):
     ui = {"title": "Demo", "summary": "s", "actions": [
-        {"id": "drain", "label": "Drain", "argv": ["demo", "wait", "--role", "{role}", "a b"], "confirm": "sure?", "owner": False},
-        {"id": "bad", "argv": "nope"}]}
+        {"id": "drain", "label": "Drain", "command": ["demo", "wait", "--role", "{role2}", "a b"], "confirm": "sure?", "owner": False},
+        {"id": "bad", "command": "nope"}]}
     manifest(tmp_path / "mods", "demo", {"cli": {"name": "demo"}, "ui": ui})
     v = hdash.module_view("demo", [ROW], tmp_path, base=tmp_path / "mods")
     assert v["ui"]["title"] == "Demo" and len(v["ui"]["actions"]) == 1
-    assert v["ui"]["actions"][0]["command"] == "demo wait --role \"<role>\" 'a b'"
+    assert v["ui"]["actions"][0]["command"] == "demo wait --role \"<role2>\" 'a b'"
     assert v["module"]["cli"] == "demo"
     tampered = hdash.module_view("demo", [{**ROW, "signature": "invalid"}], tmp_path, base=tmp_path / "mods")
     assert tampered["ui"] is None and "cli" not in tampered["module"]

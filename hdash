@@ -211,13 +211,17 @@ def modules_view(rows=None, home=None, now=None):
     return {"schema": 1, "modules": [{**_row_view(r), "doctor": read_doctor_cache(home, r["name"], now)} for r in rows]}
 
 
+# The core's placeholder grammar (hive_modules._PLACEHOLDER): `{role2}` is legal.
+_PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+
 def _argv_line(argv):
     """An action's argv template as one copyable command line. `{param}` shows as `<param>`; a token with one is
     double-quoted with the shell's specials escaped, any other token is shell-quoted."""
     out = []
     for tok in argv:
-        if re.search(r"\{[a-z_]+\}", tok):
-            tok = re.sub(r"\{([a-z_]+)\}", r"<\1>", tok)
+        if _PLACEHOLDER.search(tok):
+            tok = _PLACEHOLDER.sub(r"<\1>", tok)
             out.append('"' + re.sub(r'([\\"$`])', r"\\\1", tok) + '"')
         else:
             out.append(shlex.quote(tok))
@@ -232,7 +236,7 @@ def ui_view(manifest):
         return None
     out = {"title": clean_text(ui.get("title", ""), 80), "summary": clean_text(ui.get("summary", ""), 200), "actions": []}
     for a in (ui.get("actions") if isinstance(ui.get("actions"), list) else [])[:20]:
-        argv = a.get("argv") if isinstance(a, dict) else None
+        argv = a.get("command") if isinstance(a, dict) else None
         if not (isinstance(argv, list) and argv and all(isinstance(t, str) for t in argv)):
             continue
         out["actions"].append({"id": clean_text(a.get("id", ""), 40), "label": clean_text(a.get("label", ""), 80),
