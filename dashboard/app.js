@@ -60,13 +60,13 @@ const setNav=v=>document.querySelectorAll('nav button').forEach(x=>x.classList.t
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>goTab(b.dataset.v));
   if(!(await openHash())) render();
 })();
-function goTab(v){state.view=v;state.node=null;state.detail=null;if(v==='corpus'){C.fpage=1;C.dpage=1;}if(v==='telemetry')TP=1;
+function goTab(v){MP.tab='overview';state.view=v;state.node=null;state.detail=null;if(v==='corpus'){C.fpage=1;C.dpage=1;}if(v==='telemetry')TP=1;
   setNav(v);render();}
 function goView(v){state.view=v;state.node=null;state.detail=null;setNav(null);render();}
 function render(){
   if(state.detail) return renderDetail();
   if(state.node) return renderNode();
-  ({overview,corpus,hive,telemetry,status,audit})[state.view]();
+  ({overview,corpus,hive,telemetry,status,audit,modules,modulePage})[state.view]();
 }
 
 /* ---------- modals ---------- */
@@ -483,4 +483,34 @@ async function loadRelatedSessions(s){
   if(!rows.length){ put(el,empty('No other sessions for project '+(s.project||'-')+'.')); return; }
   LAST.sessions=rows;
   put(el,html`<table><thead><tr><th>When</th><th>Node</th><th>Agent</th><th>Dur</th><th>Cost</th></tr></thead><tbody>${rows.map((r,i)=>html`<tr class="link" onclick=${()=>openSession(i)}><td class="mono">${r.when}</td><td>${r.node_name||r.node||'-'}</td><td>${r.agent}</td><td>${fmtDur(r.duration_s)}</td><td>${fmtCost(r.cost_usd)}</td></tr>`)}</tbody></table>`);
+}
+
+/* ---------- Settings > Modules (read-only catalog and health) and the generic module page ---------- */
+let MP={name:null,tab:'overview'};
+const fmtAge=s=>s<90?`${s}s`:s<5400?`${Math.round(s/60)}m`:s<172800?`${Math.round(s/3600)}h`:`${Math.round(s/86400)}d`;
+const lvlClass=l=>l==='fail'?'c-warn':l==='warn'?'c-accent':'c-ok';
+const healthPill=d=>d?html`<span class=${lvlClass(d.worst)}>${d.worst}</span> <small class="c-dim">${fmtAge(d.age_s)} ago</small>`:html`<span class="c-dim">no doctor result yet</span>`;
+const healthBody=d=>!d?empty('No cached doctor result for this module. Run `hv doctor` on this node to refresh it.'):html`
+  <div class="note">Cached ${fmtAge(d.age_s)} ago${d.version?' for v'+d.version:''}. This page never runs the module; <span class="mono">hv doctor</span> refreshes the cache.</div>
+  ${d.results.length?html`<table><thead><tr><th>Level</th><th>Check</th><th>Message</th></tr></thead><tbody>${d.results.map(r=>html`<tr><td class=${lvlClass(r.level)}>${r.level}</td><td>${r.check}</td><td>${r.message}${r.fix_hint?html`<div class="c-dim fs12">${r.fix_hint}</div>`:null}</td></tr>`)}</tbody></table>`:empty('No results.')}`;
+async function modules(){
+  put($('#app'),html`<div class="crumb"><span class="who">Settings › Modules</span></div><div id="mbody">${spin()}</div>`);
+  let r; try{ r=await getJSON('/api/modules'); }catch(e){ put($('#mbody'),empty('modules unavailable — is hive-mind on this node?')); return; }
+  if(!r.modules.length){ put($('#mbody'),empty('No modules installed.')); return; }
+  put($('#mbody'),html`<div class="note">Read-only. Install, update and remove are <span class="mono">hive-mind module install|update|remove</span> on this node. Health is the core's cache, not a live run.</div>
+    <div class="panel"><table><thead><tr><th>Module</th><th>Version</th><th>Publisher</th><th>Signature</th><th>Service</th><th>Trust</th><th>Health</th></tr></thead><tbody>${r.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td>${m.version}</td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td>${m.service}</td><td>${m.trust}</td><td>${healthPill(m.doctor)}</td></tr>`)}</tbody></table></div>`);
+}
+async function modulePage(){
+  put($('#app'),html`<div class="crumb"><button class="back" onclick=${()=>goTab('modules')}>‹ Modules</button><span class="who">${MP.name}</span></div><div id="mpbody">${spin()}</div>`);
+  let r; try{ r=await getJSON('/api/module?name='+encodeURIComponent(MP.name)); }catch(e){ put($('#mpbody'),empty('module unavailable')); return; }
+  const m=r.module, ui=r.ui, acts=(ui&&ui.actions)||[];
+  const tabs=[['overview','Overview'],['health','Health'],...(acts.length?[['actions','Actions']]:[])];
+  if(!tabs.some(t=>t[0]===MP.tab)) MP.tab='overview';
+  const kv=(k,v)=>html`<tr><td class="c-dim">${k}</td><td>${v}</td></tr>`;
+  const body={
+    overview:()=>html`${ui&&ui.summary?html`<p>${ui.summary}</p>`:null}<table><tbody>${kv('Version',m.version)}${kv('Publisher',html`<span class="mono">${m.publisher}</span>`)}${kv('Signature',m.signature)}${kv('Service',m.service)}${kv('Device',m.device)}${kv('Trust',m.trust)}${kv('Quota use',m.quota_use)}${m.cli?kv('Command',html`<span class="mono">${m.cli}</span>`):null}</tbody></table>${m.problem?html`<div class="note c-warn">${m.problem}</div>`:null}${ui?null:html`<div class="note">This module declares no page of its own${m.signature==='valid'?'':' (its signature is not valid here, so its manifest is not read)'}.</div>`}`,
+    health:()=>healthBody(m.doctor),
+    actions:()=>html`<div class="note">Run these on this node's terminal. The dashboard runs nothing; an owner action is also signed there, never here.</div>${acts.map(a=>html`<div class="panel"><h2>${a.label||a.id}${a.owner?html` <span class="chip">owner</span>`:null}</h2>${a.confirm?html`<p class="c-dim">${a.confirm}</p>`:null}${cmdBlock(a.command)}</div>`)}`,
+  };
+  put($('#mpbody'),html`<div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===MP.tab?' active':'')} onclick=${()=>{MP.tab=t[0];modulePage();}}>${t[1]}</button>`)}</div><div class="panel">${body[MP.tab]()}</div>`);
 }
