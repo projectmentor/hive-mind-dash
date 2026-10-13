@@ -342,11 +342,25 @@ function peerRows(peers,probing){
       <td><span class=${'dot '+cls}></span>${p.name}</td><td class="mono">${p.device}</td><td>${p.principal}</td>
       <td class="mono">${p.addr}</td><td>${p.seen}</td><td>${st}</td></tr>`;});
 }
-function hiveShell(peers,probing){
+/* A module identity is an admitted key of its own (`module` names it); it is not a device. A core that sends no `module`
+   field leaves every row a device, as before. Core records no host device for a module, so they group by module name. */
+const isModuleRow=p=>typeof p.module==='string'&&p.module!=='';
+function moduleIdentities(mods){
+  if(!mods.length) return null;
+  const names=[...new Set(mods.map(p=>p.module))].sort();
+  return html`<div class="panel"><h2>Module identities <span class="count">${mods.length} admitted</span></h2>
+    <table><thead><tr><th>Module</th><th>Identities</th><th>Last seen</th></tr></thead>
+    <tbody>${names.map(n=>{const ids=mods.filter(p=>p.module===n);
+      return html`<tr><td>${n}</td><td class="mono">${ids.map(p=>html`<div>${p.device}</div>`)}</td><td>${ids.map(p=>html`<div>${p.seen}</div>`)}</td></tr>`;})}</tbody></table></div>
+    <div class="note">Each installed module has its own admitted key. They are not devices and are not duplicates: do not purge them.</div>`;
+}
+function hiveShell(all,probing){
+  const peers=all.filter(p=>!isModuleRow(p)), mods=all.filter(isModuleRow);
   const rows=peerRows(peers,probing);
   put($('#app'),html`<div class="panel"><h2>Peers <span class="count">${peers.length} admitted</span>${probing?html`<span class="spin sm"></span>`:null}</h2>
      <table><thead><tr><th>Name</th><th>Device</th><th>Principal</th><th>Address</th><th>Last seen</th><th>Status</th></tr></thead>
      <tbody>${rows.length?rows:html`<tr><td colspan="6" class="empty">no peers</td></tr>`}</tbody></table></div>
+   ${moduleIdentities(mods)}
    <div class="note">Click a node for its overview, corpus, stats &amp; telemetry · Stale device? Owner: <span class="mono">hive-mind group purge &lt;device_id&gt;</span></div>
    <div class="grid cards mt16">
      <div class="card"><div class="lbl">Owner</div><div class="stat fs17">${META.role==='OWNER'?META.node:'(remote)'}</div><div class="sub mono" title="public id — the owner key itself is never shown">${META.owner_id||'—'}${META.owner_id?html` <span class="muted">(public id)</span>`:null}</div></div>

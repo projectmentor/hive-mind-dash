@@ -1,0 +1,1 @@
+- Hive tab: module identities (core's `module` field on `/api/peers` rows) are listed under their own "Module identities" heading, grouped by module name, and no longer fill the Peers table as offline unnamed rows. A core without the field shows every row as a device, as before.

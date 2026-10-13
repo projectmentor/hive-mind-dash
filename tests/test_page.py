@@ -67,3 +67,13 @@ def test_a_model_without_a_price_reads_unpriced_never_zero():
     assert "const fmtCost=c=>c==null?'unpriced':" in JS
     assert "'n/a'" not in JS and JS.count("v.priced?fmtCost(v.cost):'unpriced'") == 2
     assert "priced models only" in JS
+
+
+def test_module_identities_are_not_listed_as_peer_devices():
+    """Core's `/api/peers` rows carry `module` for a module identity (hive-mind 4.x); the page groups those by module
+    name under their own heading and leaves the Peers table to devices. A core with no `module` field leaves every row a
+    device, so the filter keys on the field being a non-empty string, not on its absence."""
+    assert "typeof p.module==='string'&&p.module!==''" in JS
+    assert "all.filter(p=>!isModuleRow(p))" in JS and "all.filter(isModuleRow)" in JS
+    assert "Module identities" in JS and "${moduleIdentities(mods)}" in JS
+    assert "peers.length} admitted" in JS                       # the Peers count is devices only
