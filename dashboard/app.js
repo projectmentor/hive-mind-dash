@@ -605,7 +605,7 @@ function settingRow(r){
   if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: set a concrete key with <span class="mono">hconfig set</span></td></tr>`;
   if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${shownVal(r)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
   if(r.source==='env') return html`<tr>${head}<td>${showVal(r.value)}</td><td class="c-dim fs12">Overridden by <span class="mono">${r.env||'an environment variable'}</span>; unset it to edit this key.</td></tr>`;
-  const tr=html`<tr>${head}<td>${settingInput(r)}${r.set||r.secret||r.type==='bool'||r.type==='enum'?null:html`<div class="c-dim fs12">${r.default==null||r.default===''?'not set':'not set: default ('+showVal(r.default)+')'}</div>`}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
+  const tr=html`<tr>${head}<td>${settingInput(r)}${r.set||r.secret||r.type==='bool'||r.type==='enum'?null:html`<div class="c-dim fs12">${['','—'].includes(showVal(r.default))?'not set':'not set: default ('+showVal(r.default)+')'}</div>`}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
   return wireRow(tr,r);
 }
 function wireRow(frag,r){
