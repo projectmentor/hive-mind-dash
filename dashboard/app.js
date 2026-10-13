@@ -37,6 +37,13 @@ function html(strings,...vals){
 const put=(el,...nodes)=>{ if(el) el.replaceChildren(...nodes.flatMap(toNodes)); };
 const safeUrl=(u,fb)=>/^https?:\/\//i.test(String(u||''))?String(u):fb;
 
+/* Theme: the page follows the system setting until the viewer picks one; the pick is a per-viewer convenience kept in localStorage. */
+const THEME_KEY='hdash-theme';
+const themeNow=()=>document.documentElement.dataset.theme||(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark');
+function themeShow(){ const b=document.getElementById('hTheme'); if(!b) return; const t=themeNow(); b.textContent=t==='light'?'☾':'☀'; b.title='Switch to the '+(t==='light'?'dark':'light')+' theme'; b.setAttribute('aria-label',b.title); }
+try{ const t=localStorage.getItem(THEME_KEY); if(t==='light'||t==='dark') document.documentElement.dataset.theme=t; }catch(e){}
+function themeToggle(){ const t=themeNow()==='light'?'dark':'light'; document.documentElement.dataset.theme=t; try{ localStorage.setItem(THEME_KEY,t); }catch(e){} themeShow(); }
+
 const confColor=c=>c>=.6?'var(--ok)':c>=.3?'var(--accent)':'var(--warn)';
 /* Viewer mode: a tailnet viewer loads this page over HTTPS from the MagicDNS name, the operator from 127.0.0.1. The page then
    skips the calls the viewer listener refuses, never sends ?node= and asks for peers with probe=0. This only removes calls: the
@@ -54,11 +61,28 @@ function viewerRefused(u,body){
   const n=document.getElementById('vnote'); if(!n) return;
   n.hidden=false; n.textContent='The viewer listener refused '+u.split('?')[0]+(body&&body.error?': '+body.error:'')+'.';
 }
+/* Request queue (hdash_overview_v2 §3). The server answers 503 "server busy" when its slots are taken, and behind Tailscale Serve
+   (HTTP/2) the browser no longer limits itself to 6 connections, so a page that starts a dozen reads would fail at random. At most
+   4 requests are in flight for a viewer and 6 for the operator; the rest wait here. A busy 503 is retried once after 300 to 800 ms. */
+const QMAX=VIEWER?4:6, QWAIT=[]; let QBUSY=0;
+const qRun=fn=>new Promise((ok,no)=>{
+  const go=()=>{ QBUSY++; (async()=>fn())().then(ok,no).finally(()=>{ QBUSY--; const n=QWAIT.shift(); if(n) n(); }); };
+  if(QBUSY<QMAX) go(); else QWAIT.push(go);
+});
+const isBusy=(r,b)=>r.status===503&&!!b&&(b.error==='server busy'||b.error==='busy');
+const RATE_TEXT='rate limited, try again in a moment';
+/* The words for a failed read: a rate limit and a busy server are not "service down". */
+const failText=(e,down)=>e&&e.status===429?RATE_TEXT:e&&e.busy?'the service is busy, try again in a moment':down;
 const getJSON=async u=>{
   if(VIEWER) u=viewerUrl(u);
-  const r=await fetch(u);
-  if(!r.ok){ if(VIEWER){ let b=null; try{b=await r.json();}catch(e){} if(b&&b.listener==='viewer') viewerRefused(u,b); } throw new Error(r.status); }
-  return r.json();
+  for(let tries=0;;tries++){
+    const {r,b,pe}=await qRun(async()=>{ const r=await fetch(u); let b=null,pe=null; try{ b=await r.json(); }catch(e){ pe=e; } return {r,b,pe}; });
+    if(r.ok){ if(pe) throw pe; return b; }
+    const busy=isBusy(r,b);
+    if(busy&&tries===0){ await new Promise(f=>setTimeout(f,300+Math.random()*500)); continue; }
+    if(VIEWER&&!busy&&r.status!==429&&b&&b.listener==='viewer') viewerRefused(u,b);
+    const e=new Error(r.status); e.status=r.status; e.busy=busy; throw e;
+  }
 };
 const spin=t=>html`<div class="loading"><span class="spin"></span> ${t||'loading…'}</div>`;
 const empty=t=>html`<div class="empty">${t}</div>`;
@@ -71,7 +95,8 @@ let LAST={facts:[],decisions:[],sessions:[]};   // current rows, for detail look
 const setNav=v=>document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('active',x.dataset.v===v));
 
 (async function boot(){
-  try{ META=await getJSON('/api/overview'); }catch(e){ put($('#app'),empty('could not reach /api/overview — is the daemon running?')); return; }
+  $('#hTheme').onclick=themeToggle; themeShow();
+  try{ META=await getJSON('/api/overview'); }catch(e){ put($('#app'),empty(failText(e,'could not reach this device\'s HiveMind service — is it running? Check it with:')),cmdBlock('hv doctor')); return; }
   $('#hRole').textContent=META.role; $('#hRole').className='badge link '+(META.role==='OWNER'?'owner':'');
   $('#hAuth').textContent='checking…'; $('#hNode').textContent=META.node; $('#hMerkle').textContent=META.merkle;
   if(!VIEWER) $('#hRole').onclick=()=>goView('status');
@@ -100,7 +125,7 @@ function openModal(title,body,logo){
 }
 const copyCmd=btn=>{const c=btn.parentElement.querySelector('code'); if(c){try{navigator.clipboard.writeText(c.textContent);}catch(e){} btn.textContent='Copied ✓'; setTimeout(()=>btn.textContent='Copy',1300);}};
 const cmdBlock=cmd=>html`<div class="cmd"><code>${cmd}</code><button class="btn" onclick=${e=>copyCmd(e.currentTarget)}>Copy</button></div>`;
-const shieldIcon=ok=>html`<svg class="shield" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke=${ok?'#3fb950':'#f85149'} stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z"/>${ok?html`<path d="M9 12l2 2 4-4"/>`:html`<line x1="12" y1="8.5" x2="12" y2="13"/><line x1="12" y1="15.7" x2="12.01" y2="15.7"/>`}</svg>`;
+const shieldIcon=ok=>html`<svg class=${'shield '+(ok?'c-ok':'c-bad')} viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.4-3 7.6-7 9-4-1.4-7-4.6-7-9V6z"/>${ok?html`<path d="M9 12l2 2 4-4"/>`:html`<line x1="12" y1="8.5" x2="12" y2="13"/><line x1="12" y1="15.7" x2="12.01" y2="15.7"/>`}</svg>`;
 async function openOfficialModal(){
   openModal('Authenticity',spin('verifying…'),true);
   let v={ok:false,lines:[],version:META.contract};
