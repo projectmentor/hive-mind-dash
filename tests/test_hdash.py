@@ -50,7 +50,7 @@ def get(port, path, host=None, method="GET"):
 
 def test_the_page_and_assets_are_served_with_a_csp_on_the_index(served):
     port, _ = served
-    for path, ctype in (("/", "text/html"), ("/app.js", "text/javascript"), ("/app.css", "text/css"),
+    for path, ctype in (("/", "text/html"), ("/app.js", "text/javascript"), ("/app.css", "text/css"), ("/viz.js", "text/javascript"),
                         ("/logo.svg", "image/svg+xml"), ("/favicon.svg", "image/svg+xml")):
         code, body, h = get(port, path)
         assert code == 200 and h["Content-Type"].startswith(ctype) and body, path

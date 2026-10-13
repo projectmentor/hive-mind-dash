@@ -1,0 +1,1 @@
+- hdash 0.2 D1: `viz.js` (spark, bars, line, ring, limits as plain SVG), a request queue in `getJSON` (4 in flight for a viewer, 6 for the operator, one retry of a busy 503, a rate limit reads as one), and the visual system: colour tokens, a light theme and header toggle, the 12/6/1 widget grid, skeleton loading, motion rules. No view changes.

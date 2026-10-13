@@ -59,11 +59,13 @@ STATIC = {
     "index.html": "text/html; charset=utf-8",
     "app.js": "text/javascript; charset=utf-8",
     "app.css": "text/css; charset=utf-8",
+    "viz.js": "text/javascript; charset=utf-8",
     "logo.svg": "image/svg+xml",
     "favicon.svg": "image/svg+xml",
 }
 PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.html", "/dashboard/": "index.html",
-         "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css"}
+         "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css",
+         "/viz.js": "viz.js"}
 V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
 DAEMON_ONLY = ("status", "telemetry", "entities")
 LOCAL_ROUTES = ("modules", "module", "settings", "workspace")     # answered by hdash itself (Settings and the module page), this node only
@@ -875,7 +877,7 @@ SERVE_HTTPS_PORT = 8443          # a dedicated Serve port, so sharing never over
 LOGIN_HEADER = "Tailscale-User-Login"
 FUNNEL_HEADER = "Tailscale-Funnel-Request"
 VIEWER_SIGNATURE = {"listener": "viewer"}     # in every refusal; `share` and doctor probe for it
-VIEWER_PAGES = ("/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/app.js", "/app.css")
+VIEWER_PAGES = ("/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/app.js", "/app.css", "/viz.js")
 VIEWER_RECORDS_PATH = "/api/config/records"
 VIEWER_ROUTES = {        # route -> the query parameters it takes; anything else (`node` above all) is a 403
     "overview": (), "tags": (), "audit": (), "verify": (), "peers": (),
