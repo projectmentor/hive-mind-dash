@@ -74,6 +74,7 @@ def test_every_mutating_method_is_guarded(srv, method):
     {"Origin": "http://127.0.0.1:1"}, {"Origin": None}, {"Sec-Fetch-Site": "cross-site"},
     {"Sec-Fetch-Site": "same-site"}, {"Sec-Fetch-Site": "none"},
     {hdash.CSRF_HEADER: None}, {hdash.CSRF_HEADER: ""}, {hdash.CSRF_HEADER: "x" * 43}, {hdash.CSRF_HEADER: TOKEN + "x"},
+    {hdash.CSRF_HEADER: TOKEN[:-1]}, {hdash.CSRF_HEADER: TOKEN[:1]},
 ])
 def test_a_write_failing_any_check_never_reaches_the_route(srv, hdrs):
     port, seen = srv
@@ -137,8 +138,58 @@ def test_options_is_never_a_cors_yes(srv):
     assert code == 405
 
 
+def _serve(handler_factory_gw):
+    server = hdash.make_server(handler_factory_gw, 0)
+    port = server.server_address[1]
+    server.RequestHandlerClass = hdash.make_handler(handler_factory_gw, port)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, port
+
+
 def test_each_server_makes_its_own_token():
     gw = hdash.Gateway(lambda p, q: (200, {}), lambda p, q: (200, {}))
-    h1, h2 = hdash.make_handler(gw, 1), hdash.make_handler(gw, 1)
-    assert h1 is not h2   # tokens are closure state per handler; the default is secrets.token_urlsafe(32)
-    assert "secrets.token_urlsafe(32)" in (ROOT / "hdash").read_text()
+    servers = [_serve(gw) for _ in range(2)]
+    try:
+        tokens = []
+        for _, port in servers:
+            code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None})
+            assert code == 200
+            tokens.append(json.loads(body)["token"])
+        assert tokens[0] != tokens[1] and all(len(t) >= 32 for t in tokens)
+    finally:
+        for server, _ in servers:
+            server.shutdown()
+            server.server_close()
+
+
+def test_write_is_503_when_every_slot_is_busy_and_recovers():
+    gate, entered = threading.Event(), threading.Semaphore(0)
+
+    def slow(obj):
+        entered.release()
+        gate.wait(10)
+        return 200, {"ok": True}
+
+    gw = hdash.Gateway(lambda p, q: (200, {}), lambda p, q: (200, {}), {}, {"slow": slow})
+    server = hdash.make_server(gw, 0)
+    port = server.server_address[1]
+    server.RequestHandlerClass = hdash.make_handler(gw, port, csrf_token=TOKEN)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    results = []
+    workers = [threading.Thread(target=lambda: results.append(req(port, path="/api/slow")[0]))
+               for _ in range(hdash.MAX_CONCURRENT)]
+    try:
+        for w in workers:
+            w.start()
+        for _ in workers:
+            assert entered.acquire(timeout=5)
+        assert req(port, path="/api/slow")[0] == 503
+        assert req(port, "GET", "/api/overview", None)[0] == 503
+    finally:
+        gate.set()
+        for w in workers:
+            w.join(10)
+        assert results == [200] * hdash.MAX_CONCURRENT
+        assert req(port, path="/api/slow")[0] == 200
+        server.shutdown()
+        server.server_close()
