@@ -17,6 +17,9 @@ The page's `/api/*` calls are mapped to the core's read routes:
   modules, module                                               -> answered here, for this node only (no `?node=`):
                                                                      `hive-mind module list --json` plus the core's
                                                                      doctor cache; a web request never starts module code
+  workspace                                                     -> the Agents and Trust pages (defined here, never by a module):
+                                                                     the panels the installed, signature-valid modules
+                                                                     declare for a slot; read-only, this node only
   settings                                                      -> `hconfig list --json`, this node only: the records
                                                                      the config forms render (hdash reads no config file)
 
@@ -62,7 +65,7 @@ PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.ht
          "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css"}
 V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
 DAEMON_ONLY = ("status", "telemetry", "entities")
-LOCAL_ROUTES = ("modules", "module", "settings")     # answered by hdash itself (Settings and the module page), this node only
+LOCAL_ROUTES = ("modules", "module", "settings", "workspace")     # answered by hdash itself (Settings and the module page), this node only
 API_ROUTES = V1_READS + DAEMON_ONLY + LOCAL_ROUTES
 MODULE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
 DOCTOR_CACHE_DIR = ".module-doctor"      # the core's cache beside the hive (hive_modules.DOCTOR_CACHE_DIR)
@@ -371,6 +374,147 @@ def module_view(name, rows=None, home=None, now=None, base=None):
     return out
 
 
+# ---- workspaces (design §5): pages defined here, filled by the slots a module's `ui` block declares ----
+WORKSPACES = {
+    "agents": {"title": "Agents", "question": "What are my agents doing, and is anything stuck?",
+               "empty": {"hrouter": "hrouter has no data yet, so its routing decisions are not shown."}},
+    "trust": {"title": "Trust", "question": "Is this install genuine, and can I verify each claim?", "empty": {}},
+}
+STATUS_TTL = 20            # seconds a module's status envelope is reused: a page reload must not rerun module code
+STATUS_MAX_BYTES = 64 * 1024
+PANEL_ROWS, PANEL_COLS, SCRUB_DEPTH = 100, 16, 5
+PATH_RE = re.compile(r"[A-Za-z0-9_]+(\[\*\])?(\.[A-Za-z0-9_]+(\[\*\])?)*\Z")
+# The Trust page's claims, each with the command that proves it (design §3.1 "verify at").
+TRUST_CLAIMS = (
+    ("This install is the official source", "hv verify"),
+    ("Each module's manifest is signed and its files match", "hive-mind module list"),
+    ("A module's publisher key is the one pinned at install", "hive-mind module list --json"),
+    ("The journal is append-only and every entry is signed", "hv audit"),
+    ("The owner key is not on this device unless you unlocked it", "hive-mind owner status"),
+    ("Every installed module is healthy", "hv doctor"),
+)
+_status_cache = {}
+_status_lock = __import__("threading").Lock()
+
+
+def eval_path(doc, path):
+    """The contract's JSONPath subset (`a.b`, `a[*].b`, no expressions): the value there, a list when `[*]` is used,
+    or None. Anything else is None."""
+    if not isinstance(path, str) or not PATH_RE.match(path):
+        return None
+    cur = [doc]
+    fan = False
+    for part in path.split("."):
+        star = part.endswith("[*]")
+        key = part[:-3] if star else part
+        nxt = []
+        for c in cur:
+            if isinstance(c, dict) and key in c:
+                v = c[key]
+                if star:
+                    nxt.extend(v[:PANEL_ROWS * 4] if isinstance(v, list) else [])
+                else:
+                    nxt.append(v)
+        fan = fan or star
+        cur = nxt
+        if not cur:
+            return None
+    return cur if fan else cur[0]
+
+
+def scrub(v, depth=SCRUB_DEPTH):
+    """Module data for the page: strings cleaned, collections and depth bounded, nothing but JSON scalars."""
+    if isinstance(v, str):
+        return clean_text(v, 300)
+    if isinstance(v, (bool, int, float)) or v is None:
+        return v
+    if depth <= 0:
+        return None
+    if isinstance(v, list):
+        return [scrub(x, depth - 1) for x in v[:PANEL_ROWS]]
+    if isinstance(v, dict):
+        return {clean_text(k, 64): scrub(x, depth - 1) for k, x in list(v.items())[:50]}
+    return None
+
+
+def module_status_envelope(name, now=None):
+    """`hive-mind module status NAME --json`: the core's runner executes the manifest's `status` argv with a narrow
+    environment and a 20 s limit, and this returns its envelope, or None. Reused for STATUS_TTL seconds."""
+    now = time.time() if now is None else now
+    with _status_lock:
+        hit = _status_cache.get(name)
+        if hit and now - hit[0] < STATUS_TTL:
+            return hit[1]
+        try:
+            p = subprocess.run(hive_mind_argv() + ["module", "status", name, "--json"], capture_output=True, text=True,
+                               stdin=subprocess.DEVNULL, timeout=30)
+            doc = json.loads(p.stdout[:STATUS_MAX_BYTES]) if len(p.stdout) <= STATUS_MAX_BYTES else None
+        except (OSError, ValueError, subprocess.SubprocessError):
+            doc = None
+        doc = doc if isinstance(doc, dict) else None
+        _status_cache[name] = (now, doc)
+        return doc
+
+
+def _panel_data(panel, envelope, doctor):
+    """The data of one declared panel, from the sources a workspace reads (`status`, `doctor`); None with a note
+    when it names a source this page does not read."""
+    src = panel.get("from")
+    if src == "status":
+        if envelope is None:
+            return None, "the module's status did not answer"
+        path = panel.get("path")
+        val = eval_path(envelope, path) if path else envelope
+        if val is None and path:
+            val = eval_path(envelope.get("detail") if isinstance(envelope.get("detail"), dict) else {}, path)
+        return scrub(val), "" if val is not None else "no data at that path"
+    if src == "doctor":
+        return (scrub(doctor["results"]) if doctor else None), "" if doctor else "no cached doctor result"
+    return None, f"a {clean_text(src, 20)} source is shown on the module's own page"
+
+
+def slot_panels(row, slot, envelope_fn, home, base=None, now=None):
+    """The panels of one signature-valid module for `slot`, resolved from its `ui` block: [] when it declares none.
+    Status runs (cached) only for a module that declares a panel reading it."""
+    if row.get("signature") != "valid":
+        return []
+    ui = read_manifest(row["name"], base).get("ui")
+    if not isinstance(ui, dict) or not isinstance(ui.get("slots"), dict):
+        return []
+    ids = ui["slots"].get(slot)
+    panels = {p.get("id"): p for p in ui.get("panels", []) if isinstance(p, dict)} if isinstance(ui.get("panels"), list) else {}
+    out = []
+    for pid in (ids if isinstance(ids, list) else [])[:32]:
+        panel = panels.get(pid)
+        if not (isinstance(panel, dict) and isinstance(pid, str)):
+            continue
+        envelope = envelope_fn(row["name"]) if panel.get("from") == "status" else None
+        data, note = _panel_data(panel, envelope, read_doctor_cache(home, row["name"], now))
+        cols = panel.get("columns") if isinstance(panel.get("columns"), list) else []
+        out.append({"module": row["name"], "id": clean_text(pid, 32), "title": clean_text(panel.get("title", pid), 80),
+                    "widget": clean_text(panel.get("widget", ""), 32), "unit": "",
+                    "columns": [clean_text(c, 64) for c in cols[:PANEL_COLS] if isinstance(c, str)], "data": data, "note": note})
+    return out
+
+
+def workspace_view(name, rows=None, home=None, envelope_fn=None, base=None, now=None):
+    """`/api/workspace?name=agents|trust`. Read-only, this node only. None for an unknown workspace."""
+    ws = WORKSPACES.get(name)
+    if ws is None:
+        return None
+    rows = list_modules() if rows is None else rows
+    home = home or hive_home()
+    fn = envelope_fn or module_status_envelope
+    panels = [p for r in rows for p in slot_panels(r, name, fn, home, base, now)]
+    out = {"schema": 1, "name": name, "title": ws["title"], "question": ws["question"], "panels": panels,
+           "notes": [ws["empty"][m] for m in sorted(ws["empty"]) if not any(p["module"] == m for p in panels)]}
+    if name == "trust":
+        out["modules"] = [{**{k: v for k, v in _row_view(r).items() if k in ("name", "version", "publisher", "signature", "trust", "problem")},
+                           "doctor": read_doctor_cache(home, r["name"], now)} for r in rows]
+        out["claims"] = [{"claim": c, "verify": v} for c, v in TRUST_CLAIMS]
+    return out
+
+
 def hconfig_argv():
     """The `hconfig` command on PATH. Raises RuntimeError saying how to install it when it is missing."""
     exe = shutil.which("hconfig")
@@ -483,12 +627,20 @@ def local_routes():
         except RuntimeError as e:
             return 502, {"error": str(e)}
         return (200, view) if view else (404, {"error": "no such module"})
+    def workspace(query):
+        name = parse_qs(query).get("name", [""])[0]
+        try:
+            view = workspace_view(name)
+        except RuntimeError as e:
+            return 502, {"error": clean_text(e, 200)}
+        return (200, view) if view else (404, {"error": "no such workspace"})
+
     def settings(query):
         try:
             return settings_view(query)
         except RuntimeError as e:
             return 502, {"error": clean_text(e, 200)}
-    return {"modules": modules, "module": module, "settings": settings}
+    return {"modules": modules, "module": module, "settings": settings, "workspace": workspace}
 
 
 class Gateway:
