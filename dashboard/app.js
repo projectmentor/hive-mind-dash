@@ -518,7 +518,17 @@ async function modulePage(){
 
 /* ---------- Settings forms: rendered from `hconfig list` records; saved by POST /api/settings (hconfig set) ---------- */
 let CSRF=null;
-const csrfToken=async()=>{ if(!CSRF) CSRF=(await getJSON('/api/csrf')).token; return CSRF; };
+/* `hv dash` opens /#k=<launch token>; keep it for this tab only and drop it from the address bar */
+(()=>{ const m=/^#k=([\w-]+)$/.exec(location.hash); if(m){ try{ sessionStorage.setItem('hdash-k',m[1]); }catch(e){} history.replaceState(null,'',location.pathname+location.search); } })();
+const csrfToken=async()=>{
+  if(!CSRF){
+    let k=''; try{ k=sessionStorage.getItem('hdash-k')||''; }catch(e){}
+    const r=await fetch('/api/csrf',{headers:{'X-HDash-Launch':k}});
+    if(!r.ok) throw new Error('Open the dashboard with `hv dash` to save settings.');
+    CSRF=(await r.json()).token;
+  }
+  return CSRF;
+};
 async function saveSetting(id,value){
   const post=async()=>fetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json','X-HDash-CSRF':await csrfToken()},body:JSON.stringify({id,value})});
   let r=await post();
@@ -558,7 +568,7 @@ function wireRow(frag,r){
         if(e.code==='owner-locked') say('c-warn','The owner key is locked.',html`${e.hint||'Unlock it on your terminal, then save again:'} ${cmdBlock('hive-mind owner unlock --module '+(r.id.slice(2).split(':')[0]))}`);
         else say('c-warn',e.message||('refused ('+status+')'),e.hint);
       }
-    }catch(err){ say('c-warn','could not reach the dashboard service'); }
+    }catch(err){ say('c-warn',(err&&err.message)||'could not reach the dashboard service'); }
     btn.disabled=false;
   };
   return frag;

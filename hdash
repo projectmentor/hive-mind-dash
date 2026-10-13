@@ -71,6 +71,8 @@ DOCTOR_MAX_BYTES, DOCTOR_MAX_RESULTS, TEXT_MAX = 256 * 1024, 100, 400
 MANIFEST_MAX_BYTES = 1024 * 1024
 CSRF_HEADER = "X-HDash-CSRF"
 CSRF_ROUTE = "/api/csrf"
+LAUNCH_HEADER = "X-HDash-Launch"
+LAUNCH_FILE = ".hdash-launch-token"      # 0600 under HIVE_HOME; `hdash dash` hands it to the browser in the URL fragment
 MAX_BODY = 64 * 1024
 OWNER_ENV = ("HIVE_OWNER_PASSPHRASE", "HIVE_OWNER_KEY_PASSPHRASE", "HIVE_OWNER_SEED")   # never reach a child of ours
 SETTING_ID = re.compile(r"(?:node|core|x-[a-z0-9][a-z0-9_-]{0,39}):[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
@@ -88,6 +90,42 @@ ERROR_STATUS = {"unknown-key": 404, "validation": 400, "secret-on-argv": 400, "s
 
 def hive_home():
     return Path(os.environ.get("HIVE_HOME") or DEFAULT_HIVE_HOME).expanduser()
+
+
+def launch_token_path():
+    return hive_home() / LAUNCH_FILE
+
+
+def write_launch_token(path=None):
+    """A fresh random launch token, in a 0600 file made 0600 from the first byte (so no other OS account can read it)
+    and swapped in atomically. Returns the token. Only an account that can read this file can obtain the CSRF token."""
+    path = Path(path or launch_token_path())
+    token = secrets.token_urlsafe(32)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(token + "\n")
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return token
+
+
+def read_launch_token(path=None):
+    """The token `serve` wrote, or None when the file is missing, not ours, or readable by anyone else."""
+    try:
+        p = Path(path or launch_token_path())
+        st = p.lstat()
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+            return None
+        return p.read_text().strip() or None
+    except (OSError, ValueError):
+        return None
 
 
 def module_dir():
@@ -448,8 +486,10 @@ class Gateway:
             return 502, {"error": f"sync daemon unavailable: {e}"}
 
 
-def make_handler(gateway, port, csrf_token=None):
-    """`csrf_token` is fixed only by tests; a server makes its own per process. Every non-GET route passes, in
+def make_handler(gateway, port, csrf_token=None, launch_token=None):
+    """`csrf_token` and `launch_token` are fixed only by tests; a server makes its own per process (the launch token
+    comes from the 0600 file `serve` writes). `/api/csrf` is handed out only against the launch token, so another OS
+    account on the node (which can open 127.0.0.1 and set any header) gets no CSRF token and no write. Every non-GET route passes, in
     order, the Host check (DNS rebinding), an `Origin` equal to this listener's own origin (required, not optional),
     `Sec-Fetch-Site: same-origin` when the browser sends one, no `Tailscale-*` header (a Serve viewer arrives on loopback;
     writes stay on the device), a loopback source address, the CSRF token header (constant-time compare), a JSON
@@ -458,6 +498,7 @@ def make_handler(gateway, port, csrf_token=None):
     allowed = {f"127.0.0.1:{port}", f"localhost:{port}", f"[::1]:{port}"}
     origins = {f"http://{h}" for h in allowed}
     token = csrf_token or secrets.token_urlsafe(32)
+    launch = launch_token or secrets.token_urlsafe(32)
     slots = __import__("threading").BoundedSemaphore(MAX_CONCURRENT)
 
     class Handler(BaseHTTPRequestHandler):
@@ -502,6 +543,8 @@ def make_handler(gateway, port, csrf_token=None):
             if u.path == "/api/settings" and any(k.lower().startswith("tailscale-") for k in self.headers.keys()):
                 return self._refuse(403, "forbidden: not a local request")   # settings are the operator's, never a Serve viewer's
             if u.path == CSRF_ROUTE:
+                if not hmac.compare_digest((self.headers.get(LAUNCH_HEADER) or "").encode(), launch.encode()):
+                    return self._refuse(403, "missing or wrong launch token: open the dashboard with `hv dash`")
                 return self._send(200, {"token": token})
             if u.path in PAGES:
                 name = PAGES[u.path]
@@ -583,8 +626,8 @@ def make_handler(gateway, port, csrf_token=None):
     return Handler
 
 
-def make_server(gateway, port):
-    return ThreadingHTTPServer((BIND, port), make_handler(gateway, port))
+def make_server(gateway, port, launch_token=None):
+    return ThreadingHTTPServer((BIND, port), make_handler(gateway, port, launch_token=launch_token))
 
 
 def cmd_serve(args):
@@ -597,7 +640,12 @@ def cmd_serve(args):
     dport = daemon_port()
     gateway = Gateway(lambda p, q: client.request("GET", p, q),
                       lambda p, q: daemon_get(p, q, dport), local_routes(), {"settings": write_setting})
-    srv = make_server(gateway, port)
+    try:
+        launch = write_launch_token()
+    except OSError as e:
+        print(f"hdash: cannot write the launch token {launch_token_path()}: {e}", file=sys.stderr)
+        return 1
+    srv = make_server(gateway, port, launch)
     print(f"hdash: serving http://127.0.0.1:{port}/", flush=True)
     try:
         srv.serve_forever()
@@ -609,6 +657,8 @@ def cmd_serve(args):
 def cmd_dash(args):
     port = load_port()
     local = f"http://127.0.0.1:{port}/"
+    launch = read_launch_token()
+    url = f"{local}#k={launch}" if launch else local
     up = False
     try:
         urllib.request.urlopen(local + "app.css", timeout=2).close()
@@ -617,6 +667,8 @@ def cmd_dash(args):
         pass
     print("HiveMind dashboard")
     print(f"  Local:    {local}")
+    if not launch:
+        print(f"\n  ⚠ No launch token ({launch_token_path()}): the page loads but cannot save settings until hdash is running.")
     if not up:
         print("\n  ⚠ The hdash service isn't answering on this port — the dashboard won't load yet.")
         print("    Check it with `hive-mind module status hdash`, then retry `hv dash`.")
@@ -626,7 +678,7 @@ def cmd_dash(args):
     opener = next(([c] for c in ("termux-open-url", "xdg-open", "open") if shutil.which(c)), None)
     if opener:
         try:
-            subprocess.Popen(opener + [local], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(opener + [url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print("\n  Opening in your browser…")
             return 0
         except OSError:
