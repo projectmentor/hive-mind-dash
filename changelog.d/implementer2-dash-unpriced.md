@@ -1,0 +1,1 @@
+- hdash: Telemetry shows a model or session with no price as "unpriced" (it said "n/a"), and the cost total says "priced models only" when a model is left out. The prices themselves are hwatch's (hive-mind-hwatch-dev: telemetry price table).

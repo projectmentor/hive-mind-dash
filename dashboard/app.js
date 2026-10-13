@@ -64,7 +64,7 @@ const spin=t=>html`<div class="loading"><span class="spin"></span> ${t||'loading
 const empty=t=>html`<div class="empty">${t}</div>`;
 const fmtDur=s=>{s=Math.round(s||0);const h=(s/3600)|0,m=((s%3600)/60)|0;return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;};
 const fmtNum=n=>(n||0).toLocaleString();
-const fmtCost=c=>c==null?'n/a':'~$'+Number(c).toFixed(2);
+const fmtCost=c=>c==null?'unpriced':'~$'+Number(c).toFixed(2);
 const PER=25;
 let META={}, state={view:'overview',node:null,nodeTab:'overview',detail:null}, PEERS=[];
 let LAST={facts:[],decisions:[],sessions:[]};   // current rows, for detail lookups
@@ -233,7 +233,7 @@ function renderDetail(){
         ${kv('Tokens',fmtNum(s.tokens_in)+' in / '+fmtNum(s.tokens_out)+' out')}${kv('Cost',fmtCost(s.cost_usd))}
         ${s.session_id?kv('Session id',html`<span class="mono">${s.session_id}</span>`):null}
         ${s.started_at?kv('Started',html`<span class="mono">${s.started_at}</span>`):null}${s.updated_at?kv('Updated',html`<span class="mono">${s.updated_at}</span>`):null}</div>
-      ${models.length?html`<div class="panel"><h2>By model</h2><table><thead><tr><th>Model</th><th>In</th><th>Out</th><th>Cost</th></tr></thead><tbody>${models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.cost!=null?fmtCost(v.cost):'n/a'}</td></tr>`)}</tbody></table></div>`:null}
+      ${models.length?html`<div class="panel"><h2>By model</h2><table><thead><tr><th>Model</th><th>In</th><th>Out</th><th>Cost</th></tr></thead><tbody>${models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.cost!=null?fmtCost(v.cost):'unpriced'}</td></tr>`)}</tbody></table></div>`:null}
       <div class="panel"><h2>Related sessions <span class="count">same project</span></h2><div id="relsess">${spin()}</div></div>`);
   }
   if(d.kind==='fact'||d.kind==='decision') loadRelated(d.kind,d.data.id);
@@ -376,9 +376,9 @@ function telemetryBody(t,page,pagerFn,showNode,drill){
      <div class="card"><div class="lbl">Sessions</div><div class="stat">${fmtNum(T.sessions||0)}</div></div>
      <div class="card"><div class="lbl">Time</div><div class="stat fs20">${fmtDur(T.duration_s)}</div></div>
      <div class="card"><div class="lbl">Tokens</div><div class="stat fs18">${fmtNum(T.tokens_in)}<small> in</small> / ${fmtNum(T.tokens_out)}<small> out</small></div></div>
-     <div class="card"><div class="lbl">Cost</div><div class="stat fs20">${fmtCost(T.cost_usd)}</div></div></div>
+     <div class="card"><div class="lbl">Cost</div><div class="stat fs20">${fmtCost(T.cost_usd)}${models.some(([,v])=>!v.priced)?html`<small> priced models only</small>`:null}</div></div></div>
    <div class="panel"><h2>Sessions per day</h2><div class="spark">${bars}</div><div class="sparkx">${xlab}</div></div>
-   ${models.length?modelTable(models.map(([m,v])=>html`<tr class=${drill?'link':null} onclick=${drill?()=>telFilterModel(m):null}><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'n/a'}</td></tr>`)):null}
+   ${models.length?modelTable(models.map(([m,v])=>html`<tr class=${drill?'link':null} onclick=${drill?()=>telFilterModel(m):null}><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'unpriced'}</td></tr>`)):null}
    <div class="panel"><h2>${fmtNum(total)} Recent session${total===1?'':'s'}${pg()}</h2>
      <table><thead><tr><th>When</th>${showNode?html`<th>Node</th>`:null}<th>Agent</th><th>Project</th><th>Dur</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${recent}</tbody></table>
      ${total>PER?html`<div class="pgfoot">${pg()}</div>`:null}</div>`;
@@ -688,5 +688,5 @@ async function agentsTelemetry(){
   let t; try{ t=await getJSON('/api/telemetry'); }catch(e){ return; }
   const models=Object.entries((t&&t.by_model)||{}).sort((a,b)=>(b[1].in+b[1].out)-(a[1].in+a[1].out)).slice(0,50);
   const el=$('#wsbody'); if(!el||!models.length) return;
-  el.append(...toNodes(modelTable(models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'n/a'}</td></tr>`))));
+  el.append(...toNodes(modelTable(models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'unpriced'}</td></tr>`))));
 }

@@ -60,3 +60,10 @@ def test_the_corpus_tag_picker_is_a_multi_select_that_survives_a_revisit():
         assert noise.search(t), t
     for t in ("hwatch", "2.0.1", "decade", "gotcha", "1.11"):
         assert not noise.search(t), t
+
+
+def test_a_model_without_a_price_reads_unpriced_never_zero():
+    """A null cost is "unpriced" (the by-model rows, a session and the total), and a total that leaves a model out says so."""
+    assert "const fmtCost=c=>c==null?'unpriced':" in JS
+    assert "'n/a'" not in JS and JS.count("v.priced?fmtCost(v.cost):'unpriced'") == 2
+    assert "priced models only" in JS
