@@ -144,7 +144,7 @@ def test_options_is_never_a_cors_yes(srv):
 def _serve(handler_factory_gw):
     server = hdash.make_server(handler_factory_gw, 0)
     port = server.server_address[1]
-    server.RequestHandlerClass = hdash.make_handler(handler_factory_gw, port)
+    server.RequestHandlerClass = hdash.make_handler(handler_factory_gw, port, launch_token=LAUNCH)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, port
 
@@ -155,7 +155,7 @@ def test_each_server_makes_its_own_token():
     try:
         tokens = []
         for _, port in servers:
-            code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None})
+            code, body = req(port, "GET", hdash.CSRF_ROUTE, None, {"Origin": None, hdash.LAUNCH_HEADER: LAUNCH})
             assert code == 200
             tokens.append(json.loads(body)["token"])
         assert tokens[0] != tokens[1] and all(len(t) >= 32 for t in tokens)
