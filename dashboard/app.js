@@ -605,6 +605,7 @@ async function saveSetting(id,value){
 }
 const SRC_LABEL={default:'default',node:'this node','fleet-node':'fleet (this device)',fleet:'fleet',env:'environment'};
 const showVal=v=>v==null?'—':Array.isArray(v)?v.join(', '):String(v);
+const shownVal=r=>r.set?showVal(r.value):'default ('+showVal(r.default)+')';   // an unset key is its default, said so: a bare 0 reads as a setting
 function settingInput(r){
   const cur=r.secret?'':r.set?showVal(r.value):showVal(r.default==null?'':r.default).replace(/^—$/,'');
   if(r.type==='bool') return html`<select class="sv">${['true','false'].map(o=>html`<option value=${o} selected=${o===String(r.set?r.value:r.default)}>${o}</option>`)}</select>`;
@@ -616,9 +617,9 @@ function settingRow(r){
   const meta=html`<div class="c-dim fs12">${r.description||''}${r.min!=null||r.max!=null?` (${showVal(r.min)} .. ${showVal(r.max)})`:''}${r.identifying?' · identifying':''}${r.secret?' · secret':''}</div>${(r.warnings||[]).map(w=>html`<div class="c-accent fs12">${w}</div>`)}`;
   const head=html`<td><span class="mono">${id}</span>${meta}</td><td><span class="chip">${src}</span>${r.set_by&&r.set_by.ts?html`<div class="c-dim fs12">set ${r.set_by.ts}</div>`:null}</td>`;
   if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: set a concrete key with <span class="mono">hconfig set</span></td></tr>`;
-  if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${showVal(r.set?r.value:r.default)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
+  if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${shownVal(r)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
   if(r.source==='env') return html`<tr>${head}<td>${showVal(r.value)}</td><td class="c-dim fs12">Overridden by <span class="mono">${r.env||'an environment variable'}</span>; unset it to edit this key.</td></tr>`;
-  const tr=html`<tr>${head}<td>${settingInput(r)}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
+  const tr=html`<tr>${head}<td>${settingInput(r)}${r.set||r.secret||r.type==='bool'||r.type==='enum'?null:html`<div class="c-dim fs12">${['','—'].includes(showVal(r.default))?'not set':'not set: default ('+showVal(r.default)+')'}</div>`}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
   return wireRow(tr,r);
 }
 function wireRow(frag,r){
@@ -663,6 +664,8 @@ async function settingsNode(){
 }
 
 /* ---------- Workspaces (Agents, Trust, Spend, Governance): defined here; a module only declares the panels that fill a slot ---------- */
+/* A module's quota is the core's default unless its signed manifest asks for less; 0 is a real ask (the module never writes). */
+const quotaCell=(q,k)=>(q.from_manifest||[]).includes(k)?html`${q[k]} <small class="c-dim">${q[k]===0?'manifest: none allowed':'manifest'}</small>`:html`<span class="c-dim">default (${q[k]})</span>`;
 const cell=v=>v==null?'—':typeof v==='object'?JSON.stringify(v):String(v);
 function panelBody(p){
   if(p.data==null) return empty(p.note||'no data');
@@ -686,7 +689,7 @@ async function workspace(name){
     parts.push(html`<div class="panel"><h2>Modules: signature, publisher and health</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Version</th><th>Publisher</th><th>Signature</th><th>Trust</th><th>Health</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td>${m.version}</td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td>${m.trust}</td><td>${healthPill(m.doctor)}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
   }
   if(name==='spend'){
-    parts.push(html`<div class="panel"><h2>Module quotas</h2>${w.quotas.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${w.quotas.map(q=>html`<tr><td><strong>${q.module}</strong></td><td>${q.per_hour}</td><td>${q.per_day}</td><td>${q.entry_bytes}</td><td>${q.lifetime}</td><td class="mono">${cell(q.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`);
+    parts.push(html`<div class="panel"><h2>Module quotas</h2>${w.quotas.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${w.quotas.map(q=>html`<tr><td><strong>${q.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(q,k)}</td>`)}<td class="mono">${cell(q.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`);
   }
   if(name==='governance'){
     parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
