@@ -358,7 +358,8 @@ function ovApprovals(){
 }
 
 /* One read per reachable device (through the request queue, at most OV_SPARK_CAP) returns that device's sessions per day. The Devices
-   sparklines (14 days) and the Activity chart (90 days) both draw from it, so the Activity chart adds no read. */
+   sparklines (14 days) and the Activity chart (21 days) both draw from it, so the Activity chart adds no read. */
+const OV_ACT_DAYS=21;
 const ovDays=n=>[...Array(n)].map((_,i)=>new Date(Date.now()-(n-1-i)*864e5).toISOString().slice(0,10));
 function ovSparks(){
   const t=OVD.tel; if(!t||VIEWER) return;
@@ -421,17 +422,17 @@ function ovSpend(){
     <div class="wnote">Bars: sessions per day, last 7 days (cost per day is not reported yet).${unknown?' Price unknown: '+unknown+' model'+(unknown===1?'':'s')+', not in the total.':''}</div>`);
 }
 
-/* Activity: sessions per day across all devices, 90 days, stacked by device (operator only). Draws from the same per-device reads as the sparklines. */
+/* Activity: sessions per day across all devices, 21 days (the daemon returns at most the newest 21 days with sessions per device, so 21 calendar days is the longest window that is complete), stacked by device (operator only). Draws from the same per-device reads as the sparklines. */
 function ovActivity(){
   const b=document.getElementById('ovActivity'); if(!b) return;
   const t=OVD.tel;
   if(!t){ if(OVERR.tel) put(b,...ovFail('tel',OV_DOWN)); return; }
   const devs=Object.values(OVD.perDay||{});
   if(!devs.length) return;
-  const days=ovDays(90), tot=devs.reduce((a,d)=>a+days.reduce((x,k)=>x+(d.by[k]||0),0),0);
+  const days=ovDays(OV_ACT_DAYS), tot=devs.reduce((a,d)=>a+days.reduce((x,k)=>x+(d.by[k]||0),0),0);
   if(!tot){ put(b,empty('no sessions recorded on any device.')); return; }
-  put(b,html`<div class="wsum"><span class="big2">${fmtNum(tot)}</span> sessions in the last 90 days, across ${devs.length} device${devs.length===1?'':'s'}</div>
-    ${VIZ.bars(days.map(k=>({label:k,parts:devs.map(d=>d.by[k]||0)})),Object.assign({stacked:true,label:'Sessions per day by device, last 90 days: '+devs.map(d=>d.name).join(', ')},ovAnim('activity')))}
+  put(b,html`<div class="wsum"><span class="big2">${fmtNum(tot)}</span> sessions in the last ${OV_ACT_DAYS} days, across ${devs.length} device${devs.length===1?'':'s'}</div>
+    ${VIZ.bars(days.map(k=>({label:k,parts:devs.map(d=>d.by[k]||0)})),Object.assign({stacked:true,label:'Sessions per day by device, last '+OV_ACT_DAYS+' days: '+devs.map(d=>d.name).join(', ')},ovAnim('activity')))}
     <div class="legend">${devs.map((d,i)=>html`<span><i class=${'s'+(i%6+1)}></i>${d.name}</span>`)}</div>`);
 }
 

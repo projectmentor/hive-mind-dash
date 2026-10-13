@@ -69,7 +69,7 @@ def test_d3_widgets_exist_and_the_operator_only_ones_are_left_out_for_a_viewer()
 
 
 def test_d3_adds_no_per_device_read_and_no_new_route():
-    # the 90-day Activity chart and the 14-day sparklines draw from the same one-per-device read
+    # the 21-day Activity chart and the 14-day sparklines draw from the same one-per-device read
     assert OV.count("fnode=") == 1 and OV.count("OV_SPARK_CAP") == 3
     assert "(OVD.perDay=OVD.perDay||{})[n.node_id]" in OV and "ovFleet(); ovActivity();" in OV
     routes = set(re.findall(r"'(/api/[a-z/]+)", OV))
@@ -94,3 +94,10 @@ def test_d3_interim_labels_say_what_the_numbers_are():
 def test_d3_data_stays_text():
     block = OV[OV.index("function ovGrowth"):OV.index("function ovFetch")]
     assert not re.search(r"innerHTML|insertAdjacentHTML|style\s*=", block)
+
+
+def test_d3_activity_window_fits_the_daemon_by_day_cap():
+    # core _tel_aggregate returns by_day[-21:] per device; a longer window would draw the older days as zero and undercount
+    assert "const OV_ACT_DAYS=21;" in OV and "ovDays(OV_ACT_DAYS)" in OV
+    assert "ovDays(90)" not in OV.split("function ovActivity")[1].split("function ovFetch")[0]
+    assert "last 90 days" not in OV.split("function ovActivity")[1].split("function ovFetch")[0]
