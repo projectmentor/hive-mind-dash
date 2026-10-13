@@ -13,7 +13,7 @@ hive-mind module install hdash --from <this repo> --publisher <key>   # the inst
 hv dash                                                              # or: hdash dash
 ```
 
-It is read-only. `hdash serve` listens on `127.0.0.1` (config key `port`, default 9896), answers GET only and only
+It is read-only. **Modules** (nav) is Settings › Modules: the installed modules from `hive-mind module list --json` with each one's cached doctor result and its age (`.module-doctor/<name>.json`, which a web request only reads), and a generic page per module (overview, health, and a declared action as a command line to copy). It never runs module code and runs no action; configuration forms wait for hconfig. `hdash serve` listens on `127.0.0.1` (config key `port`, default 9896), answers GET only and only
 for the loopback Host, and maps the page's `/api/*` reads to the core's signed `/v1` routes (overview, tags, related,
 audit, peers, verify, search, item) or, for status, telemetry, entities and a peer's `?node=` view, to the sync
 daemon's loopback `/api/*`. `/v1/search` and `/v1/item` leave out facts the owner forgot, which the old page showed.

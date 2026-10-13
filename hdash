@@ -11,6 +11,9 @@ The page's `/api/*` calls are mapped to the core's read routes:
                                                                      the manifest's `reads` names them)
   status, telemetry, entities, and any call with `?node=<peer>` -> the sync daemon's loopback `/api/<route>`
                                                                      (which also does the signed per-node proxy)
+  modules, module                                               -> answered here, for this node only (no `?node=`):
+                                                                     `hive-mind module list --json` plus the core's
+                                                                     doctor cache; a web request never starts module code
 
 Nothing is written to the hive and no owner key is touched. Standard library only; the core's module client is
 imported from the core checkout (`HIVE_HOME`) so there is one Ed25519 in the system.
@@ -20,9 +23,14 @@ import argparse
 import base64
 import json
 import os
+import re
+import shlex
 import shutil
+import stat
 import subprocess
 import sys
+import time
+import unicodedata
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,7 +55,13 @@ PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.ht
          "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css"}
 V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
 DAEMON_ONLY = ("status", "telemetry", "entities")
-API_ROUTES = V1_READS + DAEMON_ONLY
+LOCAL_ROUTES = ("modules", "module")     # answered by hdash itself (Settings > Modules and the module page), this node only
+API_ROUTES = V1_READS + DAEMON_ONLY + LOCAL_ROUTES
+MODULE_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}\Z")
+DOCTOR_CACHE_DIR = ".module-doctor"      # the core's cache beside the hive (hive_modules.DOCTOR_CACHE_DIR)
+DOCTOR_LEVELS = ("ok", "warn", "fail")
+DOCTOR_MAX_BYTES, DOCTOR_MAX_RESULTS, TEXT_MAX = 256 * 1024, 100, 400
+MANIFEST_MAX_BYTES = 1024 * 1024
 
 
 def hive_home():
@@ -112,14 +126,184 @@ def daemon_get(path, query, port, timeout=30):
             return e.code, {"error": "daemon error"}
 
 
+def modules_dir():
+    return Path(os.environ.get("HIVE_MODULES_DIR") or Path.home() / ".hive" / "modules")
+
+
+def clean_text(value, limit=TEXT_MAX):
+    """Text from a module or a cache file: control, format (bidi, zero-width) and line-break characters out,
+    whitespace made plain, at most `limit` characters. The page renders it as text, never as markup."""
+    out = []
+    for ch in str(value):
+        cat = unicodedata.category(ch)
+        if ch in "\t\n\r":
+            out.append(" ")
+        elif cat not in ("Cc", "Cf", "Zl", "Zp"):
+            out.append(ch)
+    return "".join(out)[:limit]
+
+
+def read_doctor_cache(home, name, now=None):
+    """`<home>/.module-doctor/<name>.json` as the core wrote it, with its age, or None. Reads a file and runs nothing.
+    Like the core's reader it refuses a link, a directory or file that is not the operator's, a group- or
+    world-writable directory, an over-large file and a wrong shape, and it cleans every string again."""
+    if not MODULE_NAME.match(name):
+        return None
+    d = Path(home) / DOCTOR_CACHE_DIR
+    try:
+        dst = os.lstat(d)
+        if not (stat.S_ISDIR(dst.st_mode) and dst.st_uid == os.getuid() and not dst.st_mode & 0o022):
+            return None
+        path = d / f"{name}.json"
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > DOCTOR_MAX_BYTES:
+            return None
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict):
+        return None
+    at = doc.get("at")
+    if not (doc.get("schema") == 1 and isinstance(at, int) and not isinstance(at, bool) and isinstance(doc.get("results"), list)):
+        return None
+    results = []
+    for r in doc["results"][:DOCTOR_MAX_RESULTS]:
+        if (isinstance(r, dict) and r.get("level") in DOCTOR_LEVELS and isinstance(r.get("check"), str)
+                and isinstance(r.get("message"), str) and isinstance(r.get("fix_hint", ""), str)):
+            row = {"level": r["level"], "check": clean_text(r["check"]), "message": clean_text(r["message"])}
+            if r.get("fix_hint"):
+                row["fix_hint"] = clean_text(r["fix_hint"])
+            results.append(row)
+    now = time.time() if now is None else now
+    return {"at": at, "age_s": max(0, int(now - at)), "version": clean_text(doc.get("version", ""), 64),
+            "worst": max((r["level"] for r in results), key=DOCTOR_LEVELS.index, default="ok"), "results": results}
+
+
+def hive_mind_argv():
+    """The control-plane command: `hive-mind` on PATH, else the core checkout's own entry point."""
+    exe = shutil.which("hive-mind")
+    return [exe] if exe else [sys.executable, "-I", str(hive_home() / "hivemind_ctl.py")]
+
+
+def list_modules(timeout=20):
+    """`hive-mind module list --json` rows (argv, no shell, no stdin). Raises RuntimeError saying why not."""
+    try:
+        p = subprocess.run(hive_mind_argv() + ["module", "list", "--json"], capture_output=True, text=True,
+                           stdin=subprocess.DEVNULL, timeout=timeout)
+        doc = json.loads(p.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
+        raise RuntimeError(f"cannot list modules: {e}") from e
+    rows = doc.get("modules") if isinstance(doc, dict) and p.returncode == 0 else None
+    if not isinstance(rows, list):
+        raise RuntimeError(f"`hive-mind module list --json` failed (exit {p.returncode})")
+    return [r for r in rows if isinstance(r, dict) and MODULE_NAME.match(str(r.get("name", "")))]
+
+
+def _row_view(row):
+    keys = ("name", "version", "publisher", "signature", "service", "device", "trust", "quota_use", "problem", "config_schema")
+    return {k: clean_text(row[k], 200) if isinstance(row.get(k), str) else row.get(k) for k in keys if k in row}
+
+
+def modules_view(rows=None, home=None, now=None):
+    """Settings > Modules: the catalog and each module's cached health with its age. Read-only."""
+    rows = list_modules() if rows is None else rows
+    home = home or hive_home()
+    return {"schema": 1, "modules": [{**_row_view(r), "doctor": read_doctor_cache(home, r["name"], now)} for r in rows]}
+
+
+# The core's placeholder grammar (hive_modules._PLACEHOLDER): `{role2}` is legal.
+_PLACEHOLDER = re.compile(r"\{([a-z][a-z0-9_]*)\}")
+
+
+def _argv_line(argv):
+    """An action's argv template as one copyable command line. `{param}` shows as `<param>`; a token with one is
+    double-quoted with the shell's specials escaped, any other token is shell-quoted."""
+    out = []
+    for tok in argv:
+        if _PLACEHOLDER.search(tok):
+            tok = _PLACEHOLDER.sub(r"<\1>", tok)
+            out.append('"' + re.sub(r'([\\"$`])', r"\\\1", tok) + '"')
+        else:
+            out.append(shlex.quote(tok))
+    return " ".join(out)
+
+
+def ui_view(manifest):
+    """The part of a manifest's `ui` block the module page shows: title, summary and the declared actions as
+    commands to copy. The core validated the block at install; this still takes only strings and short lists."""
+    ui = manifest.get("ui")
+    if not isinstance(ui, dict):
+        return None
+    out = {"title": clean_text(ui.get("title", ""), 80), "summary": clean_text(ui.get("summary", ""), 200), "actions": []}
+    for a in (ui.get("actions") if isinstance(ui.get("actions"), list) else [])[:20]:
+        argv = a.get("command") if isinstance(a, dict) else None
+        if not (isinstance(argv, list) and argv and all(isinstance(t, str) for t in argv)):
+            continue
+        out["actions"].append({"id": clean_text(a.get("id", ""), 40), "label": clean_text(a.get("label", ""), 80),
+                               "command": clean_text(_argv_line(argv), 600), "confirm": clean_text(a.get("confirm", ""), 200),
+                               "owner": a.get("owner") is True})
+    return out
+
+
+def read_manifest(name, base=None):
+    """The installed `module.json` as a dict, or {}. Size-capped, regular file only; the caller decides whether the
+    core vouches for it (the row's `signature`)."""
+    path = (base or modules_dir()) / name / "module.json"
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > MANIFEST_MAX_BYTES:
+            return {}
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
+def module_view(name, rows=None, home=None, now=None, base=None):
+    """The generic module page: its catalog row, cached health and, only when the core reports its signature
+    `valid`, the `ui` block it declares. None if no such module."""
+    if not MODULE_NAME.match(name):
+        return None
+    rows = list_modules() if rows is None else rows
+    row = next((r for r in rows if r.get("name") == name), None)
+    if row is None:
+        return None
+    out = {"schema": 1, "module": {**_row_view(row), "doctor": read_doctor_cache(home or hive_home(), name, now)}, "ui": None}
+    if row.get("signature") == "valid":
+        manifest = read_manifest(name, base)
+        out["ui"] = ui_view(manifest)
+        out["module"]["cli"] = clean_text((manifest.get("cli") or {}).get("name", ""), 40) if isinstance(manifest.get("cli"), dict) else ""
+    return out
+
+
+def local_routes():
+    def modules(query):
+        try:
+            return 200, modules_view()
+        except RuntimeError as e:
+            return 502, {"error": str(e)}
+
+    def module(query):
+        name = parse_qs(query).get("name", [""])[0]
+        try:
+            view = module_view(name)
+        except RuntimeError as e:
+            return 502, {"error": str(e)}
+        return (200, view) if view else (404, {"error": "no such module"})
+    return {"modules": modules, "module": module}
+
+
 class Gateway:
     """Maps one dashboard `/api/<route>` call to the core. `v1` is a callable (path, query) -> (status, obj),
     `daemon` the same for the daemon's `/api/*`. Both are injected so tests need no live core."""
 
-    def __init__(self, v1, daemon):
-        self.v1, self.daemon = v1, daemon
+    def __init__(self, v1, daemon, local=None):
+        self.v1, self.daemon, self.local = v1, daemon, local or {}
 
     def route(self, name, query):
+        if name in LOCAL_ROUTES:                     # this node's own catalog: `?node=` is not forwarded
+            fn = self.local.get(name)
+            return fn(query) if fn else (404, {"error": "not found"})
         qs = parse_qs(query)
         if name in V1_READS and not qs.get("node", [""])[0]:
             if name == "item":                       # /api/item takes `sid`, /v1/item takes `id`
@@ -211,7 +395,7 @@ def cmd_serve(args):
         return 1
     dport = daemon_port()
     gateway = Gateway(lambda p, q: client.request("GET", p, q),
-                      lambda p, q: daemon_get(p, q, dport))
+                      lambda p, q: daemon_get(p, q, dport), local_routes())
     srv = make_server(gateway, port)
     print(f"hdash: serving http://127.0.0.1:{port}/", flush=True)
     try:
