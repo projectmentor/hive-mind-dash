@@ -260,7 +260,34 @@ async function overview(){
 }
 
 /* ---------- Corpus ---------- */
-let C={q:'',kind:'all',tag:'',sort:'confidence',status:'all',fpage:1,dpage:1,facts:[],decs:[],ftotal:0,dtotal:0,tagsLoaded:false};
+let C={q:'',kind:'all',tags:[],sort:'confidence',status:'all',fpage:1,dpage:1,facts:[],decs:[],ftotal:0,dtotal:0,tagList:null,hideNoise:true,scan:{}};
+/* The tag picker: several tags at once, ANDed. The core's search takes one `tag`, so with two or more the page asks for the first
+   and keeps the rows that carry them all (up to SCAN_PAGES pages of SCAN_PER; past that the list says it stopped). */
+const NOISE_TAG=/^\d+$|^(?=.*\d)[0-9a-f]{8,}$/, TAG_SHOW=150, SCAN_PER=200, SCAN_PAGES=5;
+function tagPickFill(){
+  const q=(($('#tagq')||{}).value||'').trim().toLowerCase(), all=C.tagList||[], sel=C.tags;
+  const rest=all.filter(t=>!sel.includes(t)&&!(C.hideNoise&&NOISE_TAG.test(t))&&t.toLowerCase().includes(q));
+  const shown=sel.concat(rest), hidden=all.filter(t=>NOISE_TAG.test(t)).length;
+  put($('#tagsum'),sel.length?'Tags: '+(sel.length>2?sel.length+' selected':sel.join(' + ')):'All tags');
+  put($('#taglist'),shown.slice(0,TAG_SHOW).map(t=>html`<label class="tagopt"><input type="checkbox" checked=${sel.includes(t)} onchange=${e=>toggleTag(t,e.target.checked)}> ${t}</label>`),
+    shown.length>TAG_SHOW?html`<div class="note">${shown.length-TAG_SHOW} more: type to narrow</div>`:null,
+    !all.length?html`<div class="note">no tags</div>`:null);
+  put($('#tagnoisel'),html`<input type="checkbox" checked=${C.hideNoise} onchange=${e=>{C.hideNoise=e.target.checked;tagPickFill();}}> hide numbers and ids${hidden?' ('+hidden+')':''}`);
+}
+function toggleTag(t,on){ C.tags=on?C.tags.concat(C.tags.includes(t)?[]:[t]):C.tags.filter(x=>x!==t); C.fpage=1; C.dpage=1; tagPickFill(); loadCorpus(); }
+async function scanAnd(kind){   // every row of the first tag's search that also carries the other selected tags
+  const key=JSON.stringify([C.q,C.sort,C.status,C.tags]), hit=C.scan[kind]; if(hit&&hit.key===key) return hit;
+  const f=kind==='fact'?'facts':'decisions', rows=[]; let capped=false;
+  for(let pg=0;;pg++){
+    const p=new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(SCAN_PER),offset:String(pg*SCAN_PER),tag:C.tags[0]});
+    const s=await getJSON('/api/search?'+p), got=s[f]||[];
+    rows.push(...got.filter(r=>C.tags.every(t=>(r.tags||[]).includes(t))));
+    if((pg+1)*SCAN_PER>=(s[f+'_total']||got.length)||!got.length) break;
+    if(pg+1>=SCAN_PAGES){ capped=true; break; }
+  }
+  return C.scan[kind]={key,rows,capped};
+}
+const cappedNote=kind=>{const h=C.scan[kind]; return C.tags.length>1&&h&&h.capped?html`<div class="note">Showing matches among the first ${SCAN_PAGES*SCAN_PER} results for “${C.tags[0]}” only; add a search word or tag to narrow.</div>`:null;};
 function corpus(){
   put($('#app'),html`
    <div class="controls">
@@ -268,13 +295,17 @@ function corpus(){
      <select id="kind"><option value="all">All</option><option value="fact">Facts</option><option value="decision">Decisions</option></select>
      <select id="sort"><option value="confidence">Sort: confidence</option><option value="importance">Sort: importance</option><option value="utility">Sort: utility</option><option value="recency">Sort: recency</option></select>
      <select id="status"><option value="all">Status: live</option><option value="contested">Contested</option><option value="forgotten">Forgotten</option><option value="volatile">Volatile</option></select>
-     <select id="tag"><option value="">All tags</option></select>
+     <details class="tagpick"><summary id="tagsum" class="chip"></summary><div class="tagbox">
+       <input type="search" id="tagq" placeholder="filter tags…">
+       <div class="tagrow"><label id="tagnoisel"></label><button type="button" class="chip" id="tagclear">clear</button></div>
+       <div id="taglist"></div></div></details>
    </div><div id="results">${spin()}</div><div id="epanel"></div>`);
   $('#kind').value=C.kind; $('#sort').value=C.sort; $('#status').value=C.status;
-  if(!C.tagsLoaded) getJSON('/api/tags').then(r=>{C.tagsLoaded=true;const sel=$('#tag');if(sel){put(sel,html`<option value="">All tags</option>`,r.tags.map(t=>html`<option>${t}</option>`));sel.value=C.tag;}}).catch(()=>{});
-  let timer; const reload=()=>{C.q=$('#q').value; const id=C.q.trim(); if(ID_RE.test(id)){ openById(id).then(ok=>{ if(!ok) reload2(); }); return; } reload2(); }; const reload2=()=>{C.kind=$('#kind').value;C.sort=$('#sort').value;C.status=$('#status').value;C.tag=$('#tag').value;C.fpage=1;C.dpage=1;loadCorpus();};
+  tagPickFill(); $('#tagq').oninput=tagPickFill; $('#tagclear').onclick=()=>{C.tags=[];C.fpage=1;C.dpage=1;tagPickFill();loadCorpus();};
+  if(!C.tagList) getJSON('/api/tags').then(r=>{C.tagList=r.tags||[];tagPickFill();}).catch(()=>{});   // kept across visits: the picker is rebuilt each time the page opens
+  let timer; const reload=()=>{C.q=$('#q').value; const id=C.q.trim(); if(ID_RE.test(id)){ openById(id).then(ok=>{ if(!ok) reload2(); }); return; } reload2(); }; const reload2=()=>{C.kind=$('#kind').value;C.sort=$('#sort').value;C.status=$('#status').value;C.fpage=1;C.dpage=1;loadCorpus();};
   $('#q').oninput=()=>{clearTimeout(timer);timer=setTimeout(reload,200);};
-  ['kind','sort','status','tag'].forEach(id=>$('#'+id).onchange=reload);
+  ['kind','sort','status'].forEach(id=>$('#'+id).onchange=reload);
   loadCorpus(); loadEntities();
 }
 /* A name more than one entity holds is shown with its id (`label`); a unique name is shown bare. */
@@ -284,11 +315,11 @@ function loadEntities(){
       <table><thead><tr><th>Entity</th><th>Type</th><th>Facts</th></tr></thead><tbody>${r.entities.map(e=>html`<tr><td>${e.label}</td><td>${e.type||''}</td><td>${e.facts}</td></tr>`)}</tbody></table></div>`);
   }).catch(()=>{});
 }
-function cparams(kind,page){const p=new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(PER),offset:String((page-1)*PER)});if(C.tag)p.set('tag',C.tag);return p.toString();}
-async function loadFacts(){if(C.kind==='decision'){C.facts=[];C.ftotal=0;return;}const s=await getJSON('/api/search?'+cparams('fact',C.fpage));C.facts=s.facts;C.ftotal=s.facts_total||s.facts.length;}
-async function loadDecs(){if(C.kind==='fact'){C.decs=[];C.dtotal=0;return;}const s=await getJSON('/api/search?'+cparams('decision',C.dpage));C.decs=s.decisions;C.dtotal=s.decisions_total||s.decisions.length;}
-function fpanelFill(){LAST.facts=C.facts;put($('#fpanel'),listBody('Facts',C.ftotal,C.facts.map(factRow),C.fpage,goFacts,'no matches'));}
-function dpanelFill(){LAST.decisions=C.decs;put($('#dpanel'),listBody('Decisions',C.dtotal,C.decs.map(decRow),C.dpage,goDecs,'no matches'));}
+function cparams(kind,page){const p=new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(PER),offset:String((page-1)*PER)});if(C.tags.length)p.set('tag',C.tags[0]);return p.toString();}
+async function loadFacts(){if(C.kind==='decision'){C.facts=[];C.ftotal=0;return;}if(C.tags.length>1){const h=await scanAnd('fact');C.facts=h.rows.slice((C.fpage-1)*PER,C.fpage*PER);C.ftotal=h.rows.length;return;}const s=await getJSON('/api/search?'+cparams('fact',C.fpage));C.facts=s.facts;C.ftotal=s.facts_total||s.facts.length;}
+async function loadDecs(){if(C.kind==='fact'){C.decs=[];C.dtotal=0;return;}if(C.tags.length>1){const h=await scanAnd('decision');C.decs=h.rows.slice((C.dpage-1)*PER,C.dpage*PER);C.dtotal=h.rows.length;return;}const s=await getJSON('/api/search?'+cparams('decision',C.dpage));C.decs=s.decisions;C.dtotal=s.decisions_total||s.decisions.length;}
+function fpanelFill(){LAST.facts=C.facts;put($('#fpanel'),listBody('Facts',C.ftotal,C.facts.map(factRow),C.fpage,goFacts,'no matches'),cappedNote('fact'));}
+function dpanelFill(){LAST.decisions=C.decs;put($('#dpanel'),listBody('Decisions',C.dtotal,C.decs.map(decRow),C.dpage,goDecs,'no matches'),cappedNote('decision'));}
 const panelShell=(id,label)=>html`<div id=${id} class="panel"><h2>${label}</h2>${spin()}</div>`;
 function loadCorpus(){   // progressive: render each panel's shell, then fill facts and decisions independently
   put($('#results'),C.kind!=='decision'?panelShell('fpanel','Facts'):null,C.kind!=='fact'?panelShell('dpanel','Decisions'):null);
@@ -297,9 +328,9 @@ function loadCorpus(){   // progressive: render each panel's shell, then fill fa
 }
 const goFacts=async p=>{C.fpage=p;put($('#fpanel'),html`<h2>Facts</h2>`,spin());try{await loadFacts();}catch(err){}if($('#fpanel'))fpanelFill();window.scrollTo({top:0});};
 const goDecs=async p=>{C.dpage=p;put($('#dpanel'),html`<h2>Decisions</h2>`,spin());try{await loadDecs();}catch(err){}if($('#dpanel'))dpanelFill();};
-const filterTag=t=>{if(state.detail||state.node){state.detail=null;state.node=null;}state.view='corpus';C.tag=t;C.q='';C.kind='all';C.status='all';C.fpage=1;C.dpage=1;
+const filterTag=t=>{if(state.detail||state.node){state.detail=null;state.node=null;}state.view='corpus';C.tags=[t];C.q='';C.kind='all';C.status='all';C.fpage=1;C.dpage=1;
   setNav('corpus');corpus();};
-const openContested=()=>{state.node=null;state.detail=null;state.view='corpus';C.q='';C.tag='';C.kind='fact';C.status='contested';C.sort='confidence';C.fpage=1;C.dpage=1;
+const openContested=()=>{state.node=null;state.detail=null;state.view='corpus';C.q='';C.tags=[];C.kind='fact';C.status='contested';C.sort='confidence';C.fpage=1;C.dpage=1;
   setNav('corpus');corpus();};
 
 /* ---------- Hive ---------- */

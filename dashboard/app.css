@@ -140,3 +140,10 @@ footer{max-width:1100px;margin:8px auto 30px;padding:0 18px;color:var(--muted);f
 .tabs{display:flex;gap:6px;margin:0 0 12px}
 .tab{background:none;border:1px solid var(--line);border-radius:8px;padding:5px 12px;color:var(--dim);cursor:pointer;font:inherit}
 .tab.active{color:var(--ink);border-color:var(--accent)}
+.tagpick{position:relative}
+.tagpick>summary{list-style:none;cursor:pointer;padding:9px 12px;font-size:13px}
+.tagpick>summary::-webkit-details-marker{display:none}
+.tagbox{position:absolute;z-index:5;top:100%;left:0;margin-top:4px;width:300px;max-height:360px;overflow:auto;padding:10px;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+.tagbox input[type=search]{width:100%;box-sizing:border-box}
+.tagrow{display:flex;justify-content:space-between;align-items:center;margin:8px 0;font-size:12px;color:var(--dim)}
+.tagopt{display:block;padding:2px 0;font-size:13px;cursor:pointer}
