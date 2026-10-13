@@ -85,9 +85,10 @@ SETTING_ID = re.compile(r"(?:node|core|x-[a-z0-9][a-z0-9_-]{0,39}):[A-Za-z0-9][A
 SETTING_PREFIX = re.compile(r"(?:node|core|x-[a-z0-9][a-z0-9_-]{0,39})?:?\Z")
 SETTING_CLASSES = ("node", "module", "governed")
 VALUE_MAX = 4096
+HELP_MAX = 400                   # the manifest rule for a `help` text (contract 4.1)
 HCONFIG_TIMEOUT = 90
 LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-RECORD_KEYS = ("id", "class", "scope", "type", "default", "values", "min", "max", "description", "secret", "identifying",
+RECORD_KEYS = ("id", "class", "scope", "type", "default", "values", "min", "max", "description", "help", "secret", "identifying",
                "visibility", "writable_by", "write_via", "warnings", "set", "source", "value", "set_by", "env", "template",
                "instance_of")
 ERROR_STATUS = {"unknown-key": 404, "validation": 400, "secret-on-argv": 400, "scope": 403, "read-only": 403,
@@ -554,7 +555,7 @@ def core_policy():
         return [], clean_text(e, 200)
     if rc != 0 or doc.get("ok") is not True or not isinstance(doc.get("keys"), list):
         return [], "hconfig did not list the core's policy keys"
-    return [{k: v for k, v in record_view(r).items() if k in ("id", "value", "default", "source", "description", "write_via")}
+    return [{k: v for k, v in record_view(r).items() if k in ("id", "value", "default", "source", "description", "help", "write_via")}
             for r in doc["keys"][:100] if isinstance(r, dict)], ""
 
 
@@ -601,6 +602,9 @@ def record_view(rec):
             out[k] = ({kk: clean_text(v.get(kk, ""), 80) for kk in ("device_id", "ts", "sid")} if isinstance(v, dict) else None)
         elif k == "values":
             out[k] = [clean_text(x, 100) for x in v[:100]] if isinstance(v, list) else []
+        elif k == "help":
+            if isinstance(v, str) and v.strip():
+                out[k] = clean_text(v, HELP_MAX)
         else:
             out[k] = _value_view(v)
     if out.get("secret") is True:

@@ -1,0 +1,1 @@
+- **hdash settings: a (?) pop-over with plain-language help.** A setting whose record carries `help` (core keys, and module keys on a 4.1 core) shows a keyboard- and tap-friendly (?) button that opens the text, rendered as text only; no `help`, no icon (Part of #18, item 10).
