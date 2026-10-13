@@ -117,3 +117,20 @@ def test_a_token_file_others_can_read_or_that_is_a_link_is_not_trusted(tmp_path)
 def test_the_page_sends_the_launch_token_from_the_fragment_and_drops_it():
     js = (ROOT / "dashboard" / "app.js").read_text()
     assert "#k=" in js and "X-HDash-Launch" in js and "history.replaceState" in js
+
+
+def test_dash_opener_argv_never_carries_the_launch_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("HIVE_HOME", str(tmp_path))
+    monkeypatch.setenv("HIVE_MODULE_DIR", str(tmp_path))
+    (tmp_path / "config").write_text(json.dumps({"port": "65112"}))
+    token = hdash.write_launch_token()
+    monkeypatch.setattr(hdash.urllib.request, "urlopen", lambda *a, **k: type("R", (), {"close": lambda s: None})())
+    monkeypatch.setattr(hdash.shutil, "which", lambda c: "/usr/bin/xdg-open" if c == "xdg-open" else None)
+    argvs = []
+    monkeypatch.setattr(hdash.subprocess, "Popen", lambda argv, **k: argvs.append(list(argv)))
+    assert hdash.main(["dash"]) == 0
+    assert argvs and token not in " ".join(" ".join(a) for a in argvs)
+    opener = next(a for a in argvs if a[0] == "xdg-open")
+    page = Path(opener[-1].removeprefix("file://"))
+    assert stat.S_IMODE(page.stat().st_mode) == 0o600
+    assert f"http://127.0.0.1:65112/#k={token}" in page.read_text()

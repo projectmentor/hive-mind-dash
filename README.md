@@ -36,8 +36,9 @@ If this is useful to you, a star on the [hive-mind repo](https://github.com/proj
 ## Who can save settings
 
 `POST /api/settings` runs `hconfig set` as the operator, so it is not open to every local process. `hdash serve` writes a
-random launch token to `$HIVE_HOME/.hdash-launch-token` (mode 0600, new on each start). `hv dash` opens
-`http://127.0.0.1:<port>/#k=<token>`; the page keeps the token for the tab, drops it from the address bar, and sends it as
+random launch token to `$HIVE_HOME/.hdash-launch-token` (mode 0600, new on each start). `hv dash` writes a 0600 redirect page
+`$HIVE_HOME/.hdash-open.html` (removed after about a minute) and opens that `file://` path, so the token is never in a command
+line (argv is world-readable in `/proc`); the page redirects to `http://127.0.0.1:<port>/#k=<token>`; the page keeps the token for the tab, drops it from the address bar, and sends it as
 `X-HDash-Launch` to get the CSRF token from `/api/csrf`. Another OS account on the node can reach the port but cannot read
 the file, so it gets no CSRF token and no write. Residual (for THREAT_MODEL): a process running as the operator's own uid
 can read the file, as it can read every other 0600 file; keep `$HIVE_HOME` private to the operator.
