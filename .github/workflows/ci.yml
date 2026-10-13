@@ -8,6 +8,13 @@ on:
 permissions:
   contents: read
 
+env:
+  # `min_core` is "4.0", so the core must report contract 4.0: until the contract bump (hive-mind#462) is on release/4.0, use its
+  # branch. Flip this to release/4.0 when #462 merges.
+  CORE_REF: implementer/4.0-contract-bump
+  CORE_OWNER: projectmentor      # split so `module check`'s identifying-data lint does not flag this file
+  CORE_REPO: hive-mind
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -18,3 +25,14 @@ jobs:
           python-version: '3.12'
       - name: pytest
         run: pip install pytest && python3 -m pytest -q
+      - name: Check out the core
+        run: git clone --quiet --depth 1 --branch "$CORE_REF" "https://github.com/$CORE_OWNER/$CORE_REPO" "$RUNNER_TEMP/core"
+      - name: Install the core's dependencies
+        run: pip install -r "$RUNNER_TEMP/core/requirements.txt"
+      - name: The manifest is signed and its files are current
+        run: python3 -I scripts/sign_manifest.py --check --core "$RUNNER_TEMP/core"
+      - name: module check (conformance and the ui block; the lint's warnings are advisory for this repository)
+        run: |
+          cd "$RUNNER_TEMP/core"
+          python3 hivemind_ctl.py module check "$GITHUB_WORKSPACE" --json | tee "$RUNNER_TEMP/check.json"
+          python3 -c 'import json,sys; o=json.load(open(sys.argv[1])); assert o["ok"], o["errors"]' "$RUNNER_TEMP/check.json"

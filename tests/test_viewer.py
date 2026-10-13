@@ -682,6 +682,13 @@ def test_the_doctor_answer_is_the_module_doctor_envelope(home, monkeypatch, caps
     assert doc["schema"] == 1 and doc["results"] and all(r["level"] in ("ok", "warn", "fail") for r in doc["results"])
 
 
+def test_doctor_names_a_missing_hconfig_and_is_quiet_when_it_is_there():
+    (ok,) = hdash.hconfig_results(lambda name: "/bin/hconfig" if name == "hconfig" else None)
+    assert ok["level"] == "ok"
+    (warn,) = hdash.hconfig_results(lambda name: None)
+    assert warn["level"] == "warn" and warn["fix_hint"] == "hive-mind module add hconfig"
+
+
 # ── the settings reader fails closed ──────────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("cfg,share", [

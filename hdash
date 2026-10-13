@@ -1429,8 +1429,17 @@ def exposure_results(cfg, operator_port, ts=tailscale_json, probe=probe_viewer):
     return rows
 
 
+def hconfig_results(which=shutil.which):
+    """The module contract has no dependency field, so the doctor says what a missing hconfig means: Settings and every Config
+    tab have nothing to render."""
+    if which("hconfig"):
+        return [{"level": "ok", "check": "hconfig", "message": "hconfig is installed"}]
+    return [{"level": "warn", "check": "hconfig", "fix_hint": "hive-mind module add hconfig",
+             "message": "hconfig is not installed: Settings and the Config tabs show nothing until it is"}]
+
+
 def cmd_doctor(args):
-    print(json.dumps({"schema": 1, "results": exposure_results(viewer_settings(), load_port())}))
+    print(json.dumps({"schema": 1, "results": hconfig_results() + exposure_results(viewer_settings(), load_port())}))
     return 0
 
 
