@@ -46,3 +46,17 @@ def test_every_api_route_the_page_calls_is_one_hdash_serves():
     called = set(re.findall(r"/api/([a-z]+)", JS))
     served = set(hdash.API_ROUTES) | {"csrf", "config"}      # /api/csrf is the guard's own route; /api/config/records is the viewer listener's
     assert called and called <= served, called - served
+
+
+def test_the_corpus_tag_picker_is_a_multi_select_that_survives_a_revisit():
+    """The picker is rebuilt each time the Corpus page opens, so its tag list is kept in `C.tagList` and refilled then
+    (a `tagsLoaded` flag once left every later visit with only "All tags"). Several tags are ANDed; bare numbers and
+    sha-like ids are hidden by default; the core's single `tag` is the first selection."""
+    assert "tagsLoaded" not in JS and "C.tagList" in JS and "tagPickFill();" in JS
+    assert 'type="checkbox"' in JS and "C.tags.every(" in JS and "p.set('tag',C.tags[0])" in JS
+    pat = re.search(r"const NOISE_TAG=/(.+?)/,", JS).group(1)
+    noise = re.compile(pat.replace("(?=", "(?="))
+    for t in ("100", "054778e984", "deadbeef01"):
+        assert noise.search(t), t
+    for t in ("hwatch", "2.0.1", "decade", "gotcha", "1.11"):
+        assert not noise.search(t), t
