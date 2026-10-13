@@ -61,11 +61,14 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+SERVE_HOST = "device.tail1234.ts.net:8443"
+
+
 def start(home, gw=None, records=None, limiter=None, slots=None):
     gw = gw or FakeGateway()
     backend = hdash.ViewerBackend(gw, records=records or (lambda: (200, {"schema": 1, "keys": []})))
     settings = hdash.SettingsCache(path_fn=lambda: home / ".peers.json")
-    server = hdash.ViewerServer(0, hdash.make_viewer_handler(backend, settings, limiter, slots))
+    server = hdash.ViewerServer(0, hdash.make_viewer_handler(backend, settings, limiter, slots, hosts=lambda: {SERVE_HOST}))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, backend, gw
 
@@ -79,7 +82,7 @@ def viewer(home):
 
 
 def req(port, path="/", method="GET", login=LOGIN, headers=None, body=None):
-    h = {"Host": f"127.0.0.1:{port}"}
+    h = {"Host": SERVE_HOST}
     if login is not None:
         h[hdash.LOGIN_HEADER] = login
     h.update(headers or {})
@@ -195,6 +198,39 @@ def test_the_viewer_handler_has_one_authorization_path_and_no_source_address(hom
     assert "do_POST" in src and "= _handle" in src             # the only entry is the gate
 
 
+@pytest.mark.parametrize("host", ["evil.example:8443", "evil.example", "127.0.0.1:{port}", "localhost", "device.tail1234.ts.net",
+                                  "device.tail1234.ts.net:9906", "", "device.tail1234.ts.net:8443.evil.example"])
+def test_a_host_other_than_the_serve_host_gets_the_signature_403(viewer, host):
+    port = viewer[0]
+    code, data = req(port, "/api/search?q=x", headers={"Host": host.format(port=port)})
+    assert code == 403 and jbody(data)["listener"] == "viewer"
+
+
+def test_the_serve_host_is_case_insensitive_and_the_default_source_fails_closed(home):
+    port = start(home)[0].server_address[1]
+    assert req(port, "/", headers={"Host": SERVE_HOST.upper()})[0] == 200
+    def boom(args):
+        raise RuntimeError("no tailscale")
+    assert hdash.ServeHosts(tsj=boom)() == frozenset()
+    status = {"Self": {"DNSName": "Device.tail1234.ts.net.", "UserID": 1}, "User": {}}
+    assert hdash.ServeHosts(tsj=lambda a: status)() == {"device.tail1234.ts.net:8443"}
+
+
+def test_serve_hosts_retries_a_failed_lookup_soon_and_keeps_a_good_one():
+    now, calls = [0.0], []
+    def tsj(a):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("down")
+        return {"Self": {"DNSName": "d.ts.net."}, "User": {}}
+    h = hdash.ServeHosts(tsj=tsj, ttl=300, retry=5, clock=lambda: now[0])
+    assert h() == frozenset() and h() == frozenset() and len(calls) == 1
+    now[0] = 6
+    assert h() == {"d.ts.net:8443"}
+    now[0] = 200
+    assert h() == {"d.ts.net:8443"} and len(calls) == 2
+
+
 # ── what it serves, and what reaches the core ─────────────────────────────────────────────────────────────────────────
 
 def test_only_a_routes_own_parameters_reach_the_core_and_peers_never_probe(viewer):
@@ -282,11 +318,11 @@ def test_the_operator_listener_ignores_identity_headers(home):
     op.RequestHandlerClass = hdash.make_handler(hdash.Gateway(lambda p, q: (200, {"v1": p}), lambda p, q: (200, {"d": p})), port)
     threading.Thread(target=op.serve_forever, daemon=True).start()
     try:
-        same = req(port, "/api/overview", login=None)
+        same = req(port, "/api/overview", login=None, headers={"Host": f"127.0.0.1:{port}"})
         assert same[0] == 200
         for hdrs in ({hdash.LOGIN_HEADER: "mallory@example.com"}, {"Tailscale-User-Name": "x"}):
-            assert req(port, "/api/overview", login=None, headers=hdrs) == same
-        assert req(port, "/", login="mallory@example.com")[0] == 200       # a local caller keeps operator access, unchanged
+            assert req(port, "/api/overview", login=None, headers={"Host": f"127.0.0.1:{port}", **hdrs}) == same
+        assert req(port, "/", login="mallory@example.com", headers={"Host": f"127.0.0.1:{port}"})[0] == 200       # a local caller keeps operator access, unchanged
     finally:
         op.shutdown()
         op.server_close()
@@ -306,7 +342,7 @@ def test_a_viewer_flood_is_throttled_and_moves_nothing_onto_the_operator_listene
         t0 = time.monotonic()
         with ThreadPoolExecutor(16) as pool:
             flood = [pool.submit(req, port, f"/api/search?q=n{i}") for i in range(300)]
-            op_status = [req(oport, "/api/overview", login=None)[0] for _ in range(5)]
+            op_status = [req(oport, "/api/overview", login=None, headers={"Host": f"127.0.0.1:{oport}"})[0] for _ in range(5)]
             codes = [f.result()[0] for f in flood]
         elapsed = time.monotonic() - t0
         assert op_status == [200] * 5 and len(ogw.calls) == 5                      # the operator was not touched by the flood

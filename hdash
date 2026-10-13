@@ -1062,13 +1062,39 @@ class ViewerBackend:
             self.upstream.release()
 
 
-def make_viewer_handler(backend, settings, limiter=None, slots=None):
+class ServeHosts:
+    """The Host values the viewer listener accepts: `<this device's MagicDNS name>:<Serve port>`, read node-locally from
+    `tailscale status --json` (no stored setting). Serve forwards the client's Host, so a rebound name (evil.example) or a
+    loopback Host is not on the list. A failed lookup is an empty set (fail closed) and is retried after `retry` seconds;
+    a good one is kept for `ttl`."""
+
+    def __init__(self, tsj=None, ttl=300.0, retry=5.0, clock=time.monotonic):
+        self.tsj, self.ttl, self.retry, self.clock = tsj, ttl, retry, clock
+        self.lock = threading.Lock()
+        self.hosts, self.until = frozenset(), 0.0
+
+    def __call__(self):
+        with self.lock:
+            now = self.clock()
+            if now < self.until:
+                return self.hosts
+            try:
+                dns = tailnet_identity((self.tsj or tailscale_json)(["status", "--json"]))[1].lower()
+            except Exception:
+                dns = ""
+            self.hosts = frozenset({f"{dns}:{SERVE_HTTPS_PORT}"}) if dns else frozenset()
+            self.until = now + (self.ttl if dns else self.retry)
+            return self.hosts
+
+
+def make_viewer_handler(backend, settings, limiter=None, slots=None, hosts=None):
     """The viewer listener's handler. Its single gate, for every request: take a slot (503), charge the per-login rate (429), then
-    require sharing on, exactly one `Tailscale-User-Login` on the allowlist (case-insensitive), no Funnel marker, method GET, no
+    require the Serve Host, sharing on, exactly one `Tailscale-User-Login` on the allowlist (case-insensitive), no Funnel marker, method GET, no
     body and a path in the read-only subset (403 for each). The 403 body is `{"listener": "viewer"}`. There is no POST handler,
     and nothing here reads the source address: a loopback source is not an identity."""
     limiter = limiter or KeyedLimiter(*VIEWER_RATE)
     slots = slots or threading.BoundedSemaphore(VIEWER_SLOTS)
+    hosts = hosts or ServeHosts()
 
     class ViewerHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -1105,6 +1131,8 @@ def make_viewer_handler(backend, settings, limiter=None, slots=None):
                 if not limiter.allow(login or NO_LOGIN):          # charged before any refusal below
                     return self._refuse(429, "rate limited")
                 cfg = settings.get()
+                if (self.headers.get("Host") or "").lower() not in hosts():      # DNS rebinding: only the name Serve forwards
+                    return self._refuse(403, "forbidden")
                 if not (cfg["share"] and login in cfg["viewers"]) or self.headers.get(FUNNEL_HEADER) is not None:
                     return self._refuse(403, "forbidden")
                 if self.command != "GET" or self.headers.get("Content-Length") or self.headers.get("Transfer-Encoding"):
