@@ -1,0 +1,1 @@
+- Overview: a refresh where every read fails now says so ("refresh failed. Showing data from Ns ago") and no longer resets the "updated" age; devices that share a name no longer share one sparkline (they are left out of the Devices sparklines and the Activity chart until the daemon filters by node id); the hidden-tab pause is pinned by a behaviour test (hive-mind-dash#27).
