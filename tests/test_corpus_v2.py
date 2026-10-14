@@ -17,7 +17,7 @@ def test_the_five_sub_tabs_and_their_searches():
 def test_entities_is_the_operators_only():
     assert "SUBS.filter(s=>!(VIEWER&&s[0]==='entities'))" in CORPUS
     assert "if(C.sub==='entities'&&VIEWER) applySub('search')" in CORPUS
-    assert "(VIEWER&&sub==='entities')" in JS
+    assert "VIEWER&&sub==='entities'?'search':sub" in JS
     assert "'/api/entities'" in JS[JS.index("const VIEWER_NO"):JS.index("function viewerUrl")]
 
 
@@ -33,9 +33,22 @@ def test_tag_or_is_one_single_tag_call_per_tag_capped_at_eight():
 def test_noise_rules():
     noise = re.compile(re.search(r"const NOISE_TAG=/(.+?)/,", CORPUS).group(1))
     ver = re.compile(re.search(r"VER_TAG=/(.+?)/,", CORPUS).group(1))
-    for t in ("100", "054778e984", "abc1234"):
+    for t in ("100", "054778e984", "abc1234", "a1b2c3d"):
         assert noise.search(t), t
-    for t in ("hwatch", "decade", "2.0.1", "1.11"):
+    for t in ("hwatch", "decade", "2.0.1", "1.11", "ab12", "a1b2c3", "dead", "cafe12"):
         assert not noise.search(t), t
     assert ver.search("2.0.1") and ver.search("3.x") and not ver.search("hwatch")
     assert "versions (" in CORPUS and "show all" in CORPUS and "hideNoise=!C.showAll&&!q" in CORPUS   # typing finds a hidden tag
+
+
+def test_followups_behaviour_under_node():
+    """hive-mind-dash#32: a viewer's #corpus/entities lands on Search; OR-mode decisions sort newest first for any sort."""
+    import os, shutil, subprocess, pytest
+    root = Path(__file__).resolve().parent
+    node = shutil.which("node") or next((str(c) for c in sorted((Path.home() / ".nvm" / "versions" / "node").glob("v*/bin/node"), reverse=True) if c.is_file()), None)
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is required in CI")
+        pytest.skip("node is not installed")
+    r = subprocess.run([node, str(root / "corpus_followups.js"), str(root.parent / "dashboard" / "app.js")], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.startswith("ok"), r.stderr + r.stdout
