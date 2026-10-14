@@ -391,7 +391,7 @@ function ovSparks(){
     }).catch(()=>{}));
 }
 
-/* Corpus growth: facts, decisions and ideas added per day, from core's `GET /v1/series?days=90` (counts per day, a day with none is left out). */
+/* Corpus growth: facts, decisions and ideas added per day, from the core's series read (via hdash's /api/series, 90 days) (counts per day, a day with none is left out). */
 function ovGrowth(){
   const b=document.getElementById('ovGrowth'); if(!b) return;
   const s=OVD.series;
