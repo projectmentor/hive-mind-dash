@@ -107,10 +107,11 @@ const setNav=v=>document.querySelectorAll('nav button').forEach(x=>x.classList.t
   document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>goTab(b.dataset.v));
   if(!(await openHash())) render();
 })();
-function goTab(v){MP.tab='overview';state.view=v;state.node=null;state.detail=null;if(v==='corpus'){C.fpage=1;C.dpage=1;}if(v==='telemetry')TP=1;
+function goTab(v){MP.tab='overview';state.view=v;state.node=null;state.detail=null;if(v==='corpus')pg1();if(v==='telemetry')TP=1;
   setNav(v);render();}
 function goView(v){state.view=v;state.node=null;state.detail=null;setNav(null);render();}
 function render(){
+  try{ if(/^#corpus/.test(location.hash)&&(state.view!=='corpus'||state.detail||state.node)) history.replaceState(null,'',location.pathname+location.search); }catch(e){}
   if(state.detail) return renderDetail();
   if(state.node) return renderNode();
   ({overview,corpus,hive,telemetry,status,audit,modules,modulePage,settingsNode,agents:()=>workspace('agents'),trust:()=>workspace('trust'),spend:()=>workspace('spend'),governance:()=>workspace('governance')})[state.view]();
@@ -206,7 +207,7 @@ const closeDetail=()=>{state.detail=null; setHash(''); render();};
 // 1.19 PR3b: a detail view is addressable by the entry's STABLE short id — `/#h:…` — resolved server-side
 // through journal_index (`/api/item`), so the link survives rebuilds and works on every node. The rowid
 // never appears in a URL.
-function setHash(sid){ try{ if(sid){ if(location.hash!=='#'+sid) history.replaceState(null,'','#'+sid); } else if(location.hash) history.replaceState(null,'',location.pathname+location.search); }catch(e){} }
+function setHash(sid){ try{ const h=sid?'#'+sid:restHash(); if(location.hash!==h&&(h||location.hash)) history.replaceState(null,'',h||location.pathname+location.search); }catch(e){} }
 const ID_RE=/^(h:[0-9a-f]{10}|[^\s:]+(:[^\s:]+)*:\d+)$/;
 // Resolve a short id or `node_id:seq` ref to its entry (fact, decision or idea) and open its detail view.
 async function openById(h){
@@ -216,7 +217,12 @@ async function openById(h){
   if(r.kind==='fact') LAST.facts=[r.item]; else if(r.kind==='decision') LAST.decisions=[r.item];
   state.detail={kind:r.kind,data:r.item}; if(r.item.sid) setHash(r.item.sid); render(); return true;
 }
-async function openHash(){ return openById((location.hash||'').slice(1)); }
+async function openHash(){
+  const h=(location.hash||'').slice(1), m=/^corpus(?:\/([a-z-]+))?$/.exec(h);
+  if(!m) return openById(h);
+  const sub=m[1]||'search'; if(!SUB_SET[sub]||(VIEWER&&sub==='entities')) return false;
+  state.node=null; state.detail=null; state.view='corpus'; applySub(sub); setNav('corpus'); render(); return true;
+}
 window.addEventListener('hashchange',()=>{ openHash(); });
 const kv=(k,v)=>html`<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`;
 const identity=x=>x.ref?kv('Identity',[html`<span class="mono">${x.ref}</span>`, x.sid?html` · <a href=${'#'+x.sid} class="mono">#${x.sid}</a>`:null]):null;
@@ -495,24 +501,45 @@ async function overview(){
 }
 
 /* ---------- Corpus ---------- */
-let C={q:'',kind:'all',tags:[],sort:'confidence',status:'all',fpage:1,dpage:1,facts:[],decs:[],ftotal:0,dtotal:0,tagList:null,hideNoise:true,scan:{}};
-/* The tag picker: several tags at once, ANDed. The core's search takes one `tag`, so with two or more the page asks for the first
-   and keeps the rows that carry them all (up to SCAN_PAGES pages of SCAN_PER; past that the list says it stopped). */
-const NOISE_TAG=/^\d+$|^(?=.*\d)[0-9a-f]{8,}$/, TAG_SHOW=150, SCAN_PER=200, SCAN_PAGES=5;
+/* Sub-tabs (hdash_overview_v2 §4). Each sets the kind and sort of the one search behind it; the sub-tab is in the URL hash
+   (`#corpus/latest-facts`) so a reload or a pasted link returns to it. Entities is the operator's: the viewer listener refuses it. */
+const SUBS=[['search','Search'],['latest-facts','Latest facts'],['latest-decisions','Latest decisions'],['ideas','Ideas'],['entities','Entities']];
+const SUB_SET={search:{kind:'all',sort:'confidence'},'latest-facts':{kind:'fact',sort:'recency'},'latest-decisions':{kind:'decision',sort:'recency'},ideas:{kind:'idea',sort:'recency'},entities:{}};
+const subList=()=>SUBS.filter(s=>!(VIEWER&&s[0]==='entities'));
+const KIND_KEY={fact:'facts',decision:'decisions',idea:'ideas'}, KIND_LABEL={fact:'Facts',decision:'Decisions',idea:'Ideas'}, KIND_PANEL={fact:'fpanel',decision:'dpanel',idea:'ipanel'};
+let C={q:'',sub:'search',kind:'all',tags:[],mode:'and',sort:'confidence',status:'all',pg:{fact:1,decision:1,idea:1},res:{fact:{rows:[],total:0},decision:{rows:[],total:0},idea:{rows:[],total:0}},tagList:null,showAll:false,verOpen:false,scan:{}};
+const pg1=()=>{C.pg={fact:1,decision:1,idea:1};};
+const kindsShown=()=>C.sub==='ideas'?['idea']:C.kind==='all'?['fact','decision']:[C.kind];
+const restHash=()=>state.view==='corpus'&&!state.node&&C.sub!=='search'?'#corpus/'+C.sub:'';
+function applySub(s){ C.sub=s; Object.assign(C,SUB_SET[s]); C.status='all'; pg1(); }
+/* The tag picker: several tags at once, ANDed (a row carries all of them) or ORed (a row carries any). The core's search takes one `tag`, so
+   AND asks for the first tag and keeps the rows that carry the rest (up to SCAN_PAGES pages of SCAN_PER; past that the list says it
+   stopped), and OR asks once per tag, at most OR_MAX tags, and merges the rows. The viewer listener refuses a repeated `tag`, and both paths send one. */
+const NOISE_TAG=/^\d+$|^(?=.*\d)[0-9a-f]{7,}$/, VER_TAG=/^\d+\.[\dx.]+/, TAG_SHOW=150, SCAN_PER=200, SCAN_PAGES=5, OR_MAX=8;
 function tagPickFill(){
   const q=(($('#tagq')||{}).value||'').trim().toLowerCase(), all=C.tagList||[], sel=C.tags;
-  const rest=all.filter(t=>!sel.includes(t)&&!(C.hideNoise&&NOISE_TAG.test(t))&&t.toLowerCase().includes(q));
-  const shown=sel.concat(rest), hidden=all.filter(t=>NOISE_TAG.test(t)).length;
-  put($('#tagsum'),sel.length?'Tags: '+(sel.length>2?sel.length+' selected':sel.join(' + ')):'All tags');
-  put($('#taglist'),shown.slice(0,TAG_SHOW).map(t=>html`<label class="tagopt"><input type="checkbox" checked=${sel.includes(t)} onchange=${e=>toggleTag(t,e.target.checked)}> ${t}</label>`),
+  const isNoise=t=>NOISE_TAG.test(t), isVer=t=>!isNoise(t)&&VER_TAG.test(t);
+  const hideNoise=!C.showAll&&!q;   // typing a tag finds it even when it is a number or an id
+  const rest=all.filter(t=>!sel.includes(t)&&t.toLowerCase().includes(q)&&!(hideNoise&&isNoise(t)));
+  const vers=hideNoise?rest.filter(isVer):[], plain=hideNoise?rest.filter(t=>!isVer(t)):rest, shown=sel.concat(plain);
+  const hidden=all.filter(isNoise).length, join=C.mode==='or'?' or ':' + ';
+  const opt=t=>html`<label class="tagopt"><input type="checkbox" checked=${sel.includes(t)} onchange=${e=>toggleTag(t,e.target.checked)}> ${t}</label>`;
+  put($('#tagsum'),sel.length?'Tags: '+(sel.length>2?sel.length+' selected':sel.join(join)):'All tags');
+  put($('#taglist'),shown.slice(0,TAG_SHOW).map(opt),
+    vers.length?html`<details class="tagver" open=${C.verOpen} ontoggle=${e=>{C.verOpen=e.target.open;}}><summary>versions (${vers.length})</summary>${vers.slice(0,TAG_SHOW).map(opt)}</details>`:null,
     shown.length>TAG_SHOW?html`<div class="note">${shown.length-TAG_SHOW} more: type to narrow</div>`:null,
     !all.length?html`<div class="note">no tags</div>`:null);
-  put($('#tagnoisel'),html`<input type="checkbox" checked=${C.hideNoise} onchange=${e=>{C.hideNoise=e.target.checked;tagPickFill();}}> hide numbers and ids${hidden?' ('+hidden+')':''}`);
+  put($('#tagnoisel'),html`<input type="checkbox" checked=${C.showAll} onchange=${e=>{C.showAll=e.target.checked;tagPickFill();}}> show all${hidden?' ('+hidden+' numbers and ids hidden)':''}`);
+  const seg=(m,lab,tip)=>html`<button type="button" class=${C.mode===m?'pg on':'pg'} aria-pressed=${String(C.mode===m)} title=${tip} onclick=${()=>setMode(m)}>${lab}</button>`;
+  put($('#tagmode'),html`<span class="seg" role="group" aria-label="Match">${seg('and','AND','a row must carry every selected tag')}${seg('or','OR','a row may carry any selected tag; at most '+OR_MAX+' tags')}</span>`);
+  put($('#tagchips'),sel.map(t=>html`<span class="chip sel">${t}<button type="button" class="x" aria-label=${'remove tag '+t} onclick=${()=>toggleTag(t,false)}>×</button></span>`),
+    sel.length>1?html`<span class="c-dim fs12">${C.mode==='or'?'rows with any of these'+(sel.length>OR_MAX?' (first '+OR_MAX+' used)':''):'rows with all of these'}</span>`:null);
 }
-function toggleTag(t,on){ C.tags=on?C.tags.concat(C.tags.includes(t)?[]:[t]):C.tags.filter(x=>x!==t); C.fpage=1; C.dpage=1; tagPickFill(); loadCorpus(); }
+function setMode(m){ if(C.mode===m) return; C.mode=m; pg1(); tagPickFill(); if(C.tags.length>1) loadCorpus(); }
+function toggleTag(t,on){ C.tags=on?C.tags.concat(C.tags.includes(t)?[]:[t]):C.tags.filter(x=>x!==t); pg1(); tagPickFill(); loadCorpus(); }
 async function scanAnd(kind){   // every row of the first tag's search that also carries the other selected tags
-  const key=JSON.stringify([C.q,C.sort,C.status,C.tags]), hit=C.scan[kind]; if(hit&&hit.key===key) return hit;
-  const f=kind==='fact'?'facts':'decisions', rows=[]; let capped=false;
+  const key=JSON.stringify([C.q,C.sort,C.status,C.mode,C.tags]), hit=C.scan[kind]; if(hit&&hit.key===key) return hit;
+  const f=KIND_KEY[kind], rows=[]; let capped=false;
   for(let pg=0;;pg++){
     const p=new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(SCAN_PER),offset:String(pg*SCAN_PER),tag:C.tags[0]});
     const s=await getJSON('/api/search?'+p), got=s[f]||[];
@@ -522,50 +549,79 @@ async function scanAnd(kind){   // every row of the first tag's search that also
   }
   return C.scan[kind]={key,rows,capped};
 }
-const cappedNote=kind=>{const h=C.scan[kind]; return C.tags.length>1&&h&&h.capped?html`<div class="note">Showing matches among the first ${SCAN_PAGES*SCAN_PER} results for “${C.tags[0]}” only; add a search word or tag to narrow.</div>`:null;};
+async function scanOr(kind){   // one search per selected tag (at most OR_MAX), merged by short id and sorted again
+  const tags=C.tags.slice(0,OR_MAX), key=JSON.stringify([C.q,C.sort,C.status,C.mode,tags]), hit=C.scan[kind]; if(hit&&hit.key===key) return hit;
+  const f=KIND_KEY[kind], seen=new Map(); let capped=false;
+  const got=await Promise.all(tags.map(t=>getJSON('/api/search?'+new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(SCAN_PER),offset:'0',tag:t}))));
+  got.forEach(s=>{ const rs=s[f]||[]; if((s[f+'_total']||rs.length)>rs.length) capped=true; rs.forEach(r=>{ const k=r.sid||r.ref||r.id; if(!seen.has(k)) seen.set(k,r); }); });
+  const rows=[...seen.values()];
+  rows.sort(C.sort==='recency'?(a,b)=>String(b.created).localeCompare(String(a.created)):(a,b)=>(b[C.sort]||0)-(a[C.sort]||0));
+  return C.scan[kind]={key,rows,capped};
+}
+const cappedNote=kind=>{const h=C.scan[kind]; if(C.tags.length<2||!h) return null;
+  if(C.mode==='or') return h.capped?html`<div class="note">Showing the first ${SCAN_PER} results for each selected tag only; add a search word to narrow.</div>`:null;
+  return h.capped?html`<div class="note">Showing matches among the first ${SCAN_PAGES*SCAN_PER} results for “${C.tags[0]}” only; add a search word or tag to narrow.</div>`:null;};
 function corpus(){
-  put($('#app'),html`
+  if(C.sub==='entities'&&VIEWER) applySub('search');
+  try{ const h=restHash()||(C.sub==='search'?'':'#corpus/'+C.sub); if(location.hash!==h&&/^(#corpus.*)?$/.test(location.hash)) history.replaceState(null,'',h||location.pathname+location.search); }catch(e){}
+  const subnav=html`<div class="subnav" role="tablist">${subList().map(s=>html`<button role="tab" aria-selected=${String(C.sub===s[0])} class=${C.sub===s[0]?'on':null} onclick=${()=>goSub(s[0])}>${s[1]}</button>`)}</div>`;
+  if(C.sub==='entities'){ put($('#app'),subnav,html`<div id="results">${spin()}</div>`); loadEntities(); return; }
+  const srch=C.sub==='search', ideas=C.sub==='ideas';
+  put($('#app'),subnav,html`
    <div class="controls">
-     <input type="search" id="q" placeholder="Search facts &amp; decisions, or paste an id (h:… or node:seq)…" value=${C.q}>
-     <select id="kind"><option value="all">All</option><option value="fact">Facts</option><option value="decision">Decisions</option></select>
-     <select id="sort"><option value="confidence">Sort: confidence</option><option value="importance">Sort: importance</option><option value="utility">Sort: utility</option><option value="recency">Sort: recency</option></select>
-     <select id="status"><option value="all">Status: live</option><option value="contested">Contested</option><option value="forgotten">Forgotten</option><option value="volatile">Volatile</option></select>
+     <input type="search" id="q" placeholder=${ideas?'Search ideas…':'Search facts & decisions, or paste an id (h:… or node:seq)…'} value=${C.q}>
+     ${srch?html`<select id="kind"><option value="all">All</option><option value="fact">Facts</option><option value="decision">Decisions</option></select>`:null}
+     ${srch||ideas?html`<select id="sort"><option value="confidence">Sort: confidence</option><option value="importance">Sort: importance</option><option value="utility">Sort: utility</option><option value="recency">Sort: recency</option></select>`:null}
+     ${srch||C.sub==='latest-facts'?html`<select id="status"><option value="all">Status: live</option><option value="contested">Contested</option><option value="forgotten">Forgotten</option><option value="volatile">Volatile</option></select>`:null}
      <details class="tagpick"><summary id="tagsum" class="chip"></summary><div class="tagbox">
        <input type="search" id="tagq" placeholder="filter tags…">
-       <div class="tagrow"><label id="tagnoisel"></label><button type="button" class="chip" id="tagclear">clear</button></div>
+       <div class="tagrow"><span id="tagmode"></span><button type="button" class="chip" id="tagclear">clear</button></div>
+       <div class="tagrow"><label id="tagnoisel"></label></div>
        <div id="taglist"></div></div></details>
-   </div><div id="results">${spin()}</div><div id="epanel"></div>`);
-  $('#kind').value=C.kind; $('#sort').value=C.sort; $('#status').value=C.status;
-  tagPickFill(); $('#tagq').oninput=tagPickFill; $('#tagclear').onclick=()=>{C.tags=[];C.fpage=1;C.dpage=1;tagPickFill();loadCorpus();};
+   </div><div id="tagchips" class="tagchips"></div><div id="results">${spin()}</div>`);
+  ['kind','sort','status'].forEach(id=>{ const e=$('#'+id); if(e) e.value=C[id]; });
+  tagPickFill(); $('#tagq').oninput=tagPickFill; $('#tagclear').onclick=()=>{C.tags=[];pg1();tagPickFill();loadCorpus();};
   if(!C.tagList) getJSON('/api/tags').then(r=>{C.tagList=r.tags||[];tagPickFill();}).catch(()=>{});   // kept across visits: the picker is rebuilt each time the page opens
-  let timer; const reload=()=>{C.q=$('#q').value; const id=C.q.trim(); if(ID_RE.test(id)){ openById(id).then(ok=>{ if(!ok) reload2(); }); return; } reload2(); }; const reload2=()=>{C.kind=$('#kind').value;C.sort=$('#sort').value;C.status=$('#status').value;C.fpage=1;C.dpage=1;loadCorpus();};
+  let timer; const reload=()=>{C.q=$('#q').value; const id=C.q.trim(); if(ID_RE.test(id)){ openById(id).then(ok=>{ if(!ok) reload2(); }); return; } reload2(); };
+  const reload2=()=>{ ['kind','sort','status'].forEach(k=>{ const e=$('#'+k); if(e) C[k]=e.value; }); pg1(); loadCorpus(); };
   $('#q').oninput=()=>{clearTimeout(timer);timer=setTimeout(reload,200);};
-  ['kind','sort','status'].forEach(id=>$('#'+id).onchange=reload);
-  loadCorpus(); loadEntities();
+  ['kind','sort','status'].forEach(id=>{ const e=$('#'+id); if(e) e.onchange=reload; });
+  loadCorpus();
 }
+function goSub(s){ applySub(s); corpus(); }
 /* A name more than one entity holds is shown with its id (`label`); a unique name is shown bare. */
 function loadEntities(){
-  getJSON('/api/entities').then(r=>{const el=$('#epanel'); if(!el||!r.entities.length)return;
+  getJSON('/api/entities').then(r=>{const el=$('#results'); if(!el||state.view!=='corpus'||C.sub!=='entities') return;
+    if(!r.entities.length){ put(el,empty('no entities recorded yet')); return; }
     put(el,html`<div class="panel"><h2>Entities <span class="count">${r.entities.length}${r.shared_names?html` · ${r.shared_names} shared name${r.shared_names===1?'':'s'}`:null}</span></h2>
       <table><thead><tr><th>Entity</th><th>Type</th><th>Facts</th></tr></thead><tbody>${r.entities.map(e=>html`<tr><td>${e.label}</td><td>${e.type||''}</td><td>${e.facts}</td></tr>`)}</tbody></table></div>`);
-  }).catch(()=>{});
+  }).catch(e=>{const el=$('#results'); if(el) put(el,empty(failText(e,'could not read entities')));});
 }
 function cparams(kind,page){const p=new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(PER),offset:String((page-1)*PER)});if(C.tags.length)p.set('tag',C.tags[0]);return p.toString();}
-async function loadFacts(){if(C.kind==='decision'){C.facts=[];C.ftotal=0;return;}if(C.tags.length>1){const h=await scanAnd('fact');C.facts=h.rows.slice((C.fpage-1)*PER,C.fpage*PER);C.ftotal=h.rows.length;return;}const s=await getJSON('/api/search?'+cparams('fact',C.fpage));C.facts=s.facts;C.ftotal=s.facts_total||s.facts.length;}
-async function loadDecs(){if(C.kind==='fact'){C.decs=[];C.dtotal=0;return;}if(C.tags.length>1){const h=await scanAnd('decision');C.decs=h.rows.slice((C.dpage-1)*PER,C.dpage*PER);C.dtotal=h.rows.length;return;}const s=await getJSON('/api/search?'+cparams('decision',C.dpage));C.decs=s.decisions;C.dtotal=s.decisions_total||s.decisions.length;}
-function fpanelFill(){LAST.facts=C.facts;put($('#fpanel'),listBody('Facts',C.ftotal,C.facts.map(factRow),C.fpage,goFacts,'no matches'),cappedNote('fact'));}
-function dpanelFill(){LAST.decisions=C.decs;put($('#dpanel'),listBody('Decisions',C.dtotal,C.decs.map(decRow),C.dpage,goDecs,'no matches'),cappedNote('decision'));}
-const panelShell=(id,label)=>html`<div id=${id} class="panel"><h2>${label}</h2>${spin()}</div>`;
-function loadCorpus(){   // progressive: render each panel's shell, then fill facts and decisions independently
-  put($('#results'),C.kind!=='decision'?panelShell('fpanel','Facts'):null,C.kind!=='fact'?panelShell('dpanel','Decisions'):null);
-  if(C.kind!=='decision') loadFacts().then(fpanelFill).catch(()=>put($('#fpanel'),html`<h2>Facts</h2>`,empty('error')));
-  if(C.kind!=='fact') loadDecs().then(dpanelFill).catch(()=>put($('#dpanel'),html`<h2>Decisions</h2>`,empty('error')));
+async function loadKind(kind){
+  const r=C.res[kind], page=C.pg[kind], f=KIND_KEY[kind];
+  if(C.tags.length>1){ const h=await (C.mode==='or'?scanOr:scanAnd)(kind); r.rows=h.rows.slice((page-1)*PER,page*PER); r.total=h.rows.length; return; }
+  const s=await getJSON('/api/search?'+cparams(kind,page)); r.rows=s[f]||[]; r.total=s[f+'_total']||r.rows.length;
 }
-const goFacts=async p=>{C.fpage=p;put($('#fpanel'),html`<h2>Facts</h2>`,spin());try{await loadFacts();}catch(err){}if($('#fpanel'))fpanelFill();window.scrollTo({top:0});};
-const goDecs=async p=>{C.dpage=p;put($('#dpanel'),html`<h2>Decisions</h2>`,spin());try{await loadDecs();}catch(err){}if($('#dpanel'))dpanelFill();};
-const filterTag=t=>{if(state.detail||state.node){state.detail=null;state.node=null;}state.view='corpus';C.tags=[t];C.q='';C.kind='all';C.status='all';C.fpage=1;C.dpage=1;
+const ideaRow=i=>html`<div class="row link" onclick=${()=>{ if(i.sid) openById(i.sid); }}><div class="content">${(i.content||'').slice(0,240)}</div>
+   <div class="meta">${confBar(i.confidence)}${confNum(i.confidence)}${i.contested?pill('contested','CONTESTED'):null}${(i.tags||[]).map(t=>tagChip(t))}
+     <span class="mtauto">${i.source} · ${i.created}</span></div></div>`;
+const KIND_ROW={fact:factRow,decision:decRow,idea:ideaRow};
+function panelFill(kind){
+  const r=C.res[kind]; if(kind==='fact') LAST.facts=r.rows; else if(kind==='decision') LAST.decisions=r.rows;
+  put($('#'+KIND_PANEL[kind]),listBody(KIND_LABEL[kind],r.total,r.rows.map(KIND_ROW[kind]),C.pg[kind],p=>goPage(kind,p),'no matches'),cappedNote(kind));
+}
+const panelShell=(id,label)=>html`<div id=${id} class="panel"><h2>${label}</h2>${spin()}</div>`;
+const panelFail=(kind,e)=>put($('#'+KIND_PANEL[kind]),html`<h2>${KIND_LABEL[kind]}</h2>`,empty(failText(e,'error')));
+function loadCorpus(){   // progressive: render each panel's shell, then fill each kind independently
+  const ks=kindsShown(), sub=C.sub;
+  put($('#results'),ks.map(k=>panelShell(KIND_PANEL[k],KIND_LABEL[k])));
+  ks.forEach(k=>loadKind(k).then(()=>{ if(C.sub===sub&&$('#'+KIND_PANEL[k])) panelFill(k); }).catch(e=>{ if($('#'+KIND_PANEL[k])) panelFail(k,e); }));
+}
+const goPage=async(kind,p)=>{C.pg[kind]=p;const el=$('#'+KIND_PANEL[kind]);put(el,html`<h2>${KIND_LABEL[kind]}</h2>`,spin());try{await loadKind(kind);}catch(err){}if($('#'+KIND_PANEL[kind]))panelFill(kind);if(kind==='fact')window.scrollTo({top:0});};
+const filterTag=t=>{if(state.detail||state.node){state.detail=null;state.node=null;}state.view='corpus';C.sub='search';C.tags=[t];C.q='';C.kind='all';C.status='all';pg1();
   setNav('corpus');corpus();};
-const openContested=()=>{state.node=null;state.detail=null;state.view='corpus';C.q='';C.tags=[];C.kind='fact';C.status='contested';C.sort='confidence';C.fpage=1;C.dpage=1;
+const openContested=()=>{state.node=null;state.detail=null;state.view='corpus';C.sub='search';C.q='';C.tags=[];C.kind='fact';C.status='contested';C.sort='confidence';pg1();
   setNav('corpus');corpus();};
 
 /* ---------- Hive ---------- */
