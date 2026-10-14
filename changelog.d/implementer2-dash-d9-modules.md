@@ -1,0 +1,1 @@
+- hdash 0.2 D9: Modules is the one place for a module's detail. A module's Overview now lists its own admitted keys and the device that hosts them. Trust and Governance show one line per module that links to it, instead of repeating the module tables. A module's Config tab keeps its own Fleet / This device choice, separate from Settings › Node.
