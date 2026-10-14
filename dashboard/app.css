@@ -302,3 +302,5 @@ button.help:focus-visible,nav button:focus-visible,.btn:focus-visible{outline:2p
 .linkbtn{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline}
 tr.modrow td{background:var(--surface)} tr.modrow td.nest{padding-left:34px}
 .c-dim.sm{font-size:11px}
+
+.sparkx.ends{justify-content:space-between} .sparkx.ends > div{flex:none}

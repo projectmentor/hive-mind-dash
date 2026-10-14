@@ -1,0 +1,1 @@
+- hdash 0.2 D6: the Telemetry tab tells a story: the question "How much work are my devices doing?", a headline, then sessions per day (90 days), tokens out by model (models with no known price drawn open, not zero) and sessions by device, all from the one hive-wide read. The filters, devices list and recent-sessions and by-model tables sit behind a Raw toggle, off by default.

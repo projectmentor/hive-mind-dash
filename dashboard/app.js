@@ -690,7 +690,7 @@ async function hive(){
 
 /* ---------- Telemetry body (shared) ---------- */
 const modelTable=(rows)=>html`<div class="panel"><h2>By model</h2><table><thead><tr><th>Model</th><th>In</th><th>Out</th><th>Cost</th></tr></thead><tbody>${rows}</tbody></table></div>`;
-function telemetryBody(t,page,pagerFn,showNode,drill){
+function telemetryBody(t,page,pagerFn,showNode,drill,noCards){
   LAST.sessions=t.recent||[];
   const T=t.totals||{}; const days=t.by_day||[]; const max=Math.max(1,...days.map(d=>d.sessions));
   const bars=days.map(d=>html`<div title=${d.day+': '+d.sessions+(drill?' — click to filter':'')} style=${Object.assign({height:Math.round(d.sessions/max*100)+'%'},drill?{cursor:'pointer'}:{})} onclick=${drill?()=>telFilterDay(d.day):null}></div>`);
@@ -698,11 +698,11 @@ function telemetryBody(t,page,pagerFn,showNode,drill){
   const models=Object.entries(t.by_model||{}).sort((a,b)=>(b[1].in+b[1].out)-(a[1].in+a[1].out));
   const total=t.recent_total||T.sessions||0; const pg=()=>pager(page,total,PER,pagerFn);
   const recent=(t.recent||[]).map((r,i)=>html`<tr class="link" onclick=${()=>openSession(i)}><td class="mono">${r.when}</td>${showNode?html`<td>${r.node_name||r.node||'-'}</td>`:null}<td>${r.agent}</td><td>${r.project}</td><td>${fmtDur(r.duration_s)}</td><td>${fmtNum(r.tokens_in)}/${fmtNum(r.tokens_out)}</td><td>${fmtCost(r.cost_usd)}</td></tr>`);
-  return html`<div class="grid cards">
+  return html`${noCards?null:html`<div class="grid cards">
      <div class="card"><div class="lbl">Sessions</div><div class="stat">${fmtNum(T.sessions||0)}</div></div>
      <div class="card"><div class="lbl">Time</div><div class="stat fs20">${fmtDur(T.duration_s)}</div></div>
      <div class="card"><div class="lbl">Tokens</div><div class="stat fs18">${fmtNum(T.tokens_in)}<small> in</small> / ${fmtNum(T.tokens_out)}<small> out</small></div></div>
-     <div class="card"><div class="lbl">Cost</div><div class="stat fs20">${fmtCost(T.cost_usd)}${models.some(([,v])=>!v.priced)?html`<small> priced models only</small>`:null}</div></div></div>
+     <div class="card"><div class="lbl">Cost</div><div class="stat fs20">${fmtCost(T.cost_usd)}${models.some(([,v])=>!v.priced)?html`<small> priced models only</small>`:null}</div></div></div>`}
    <div class="panel"><h2>Sessions per day</h2><div class="spark">${bars}</div><div class="sparkx">${xlab}</div></div>
    ${models.length?modelTable(models.map(([m,v])=>html`<tr class=${drill?'link':null} onclick=${drill?()=>telFilterModel(m):null}><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'unpriced'}</td></tr>`)):null}
    <div class="panel"><h2>${fmtNum(total)} Recent session${total===1?'':'s'}${pg()}</h2>
@@ -710,12 +710,43 @@ function telemetryBody(t,page,pagerFn,showNode,drill){
      ${total>PER?html`<div class="pgfoot">${pg()}</div>`:null}</div>`;
 }
 
+
+/* The Telemetry storyline (hdash_overview_v2 §5): a question, a headline, three charts from the one hive-wide read the page already
+   makes (no per-device reads), then Raw: today's filters and tables, off by default. */
+let TRAW=false;
+const TEL_DAYS=90;
+function telStory(t,devs){
+  const T=t.totals||{}, by={}; (t.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
+  const days=ovDays(TEL_DAYS), vals=days.map(k=>by[k]||0), inWin=vals.reduce((a,b)=>a+b,0);
+  const models=Object.entries(t.by_model||{}).sort((a,b)=>b[1].out-a[1].out).slice(0,8);
+  const unp=models.filter(([,v])=>!v.priced).length;
+  const dv=devs.slice().sort((a,b)=>b.sessions-a.sessions).slice(0,8);
+  const legend=(rows)=>html`<div class="legend">${rows.map(([label,n,i,h])=>html`<span><i class=${'s'+(i%6+1)}></i>${label} ${fmtNum(n)}${h?' (price unknown)':''}</span>`)}</div>`;
+  const a=(k)=>({animate:!TSEEN[k]});
+  const out=html`<div class="panel"><div class="note">How much work are my devices doing?</div>
+    <div class="wsum"><span class="big2">${fmtNum(T.sessions||0)}</span> sessions in total, ${fmtNum(inWin)} in the last ${TEL_DAYS} days · ${fmtDur(T.duration_s)} of work · ${fmtNum(T.tokens_out)} tokens out · ${fmtCost(T.cost_usd)}${unp?' (models with a known price only)':''}</div></div>
+    <div class="panel"><h2>Sessions per day, last ${TEL_DAYS} days</h2>
+      ${inWin?VIZ.bars(days.map((k,i)=>({label:k,value:vals[i]})),Object.assign({label:'Sessions per day, last '+TEL_DAYS+' days: '+inWin+' in total'},a('day'))):empty('no sessions in the last '+TEL_DAYS+' days')}
+      <div class="sparkx ends"><div>${days[0].slice(5)}</div><div>${days[days.length-1].slice(5)}</div></div></div>
+    <div class="panel"><h2>Tokens out by model</h2>
+      ${models.length?html`${VIZ.bars(models.map(([m,v])=>({label:m,value:v.out,hatch:!v.priced})),Object.assign({label:'Tokens out by model: '+models.map(([m,v])=>m+' '+fmtNum(v.out)).join(', ')},a('model')))}
+        ${legend(models.map(([m,v],i)=>[m,v.out,i,!v.priced]))}
+        ${unp?html`<div class="note">Open bars are models with no known price, so they have no cost in the headline.</div>`:null}`:empty('no model usage recorded yet')}</div>
+    <div class="panel"><h2>Sessions by device</h2>
+      ${dv.length?html`${VIZ.bars(dv.map(n=>({label:n.node,value:n.sessions})),Object.assign({label:'Sessions by device: '+dv.map(n=>n.node+' '+fmtNum(n.sessions)).join(', ')},a('dev')))}
+        ${legend(dv.map((n,i)=>[n.node,n.sessions,i]))}`:empty('no device has reported sessions yet')}</div>`;
+  ['day','model','dev'].forEach(k=>{ TSEEN[k]=1; });
+  return out;
+}
+const TSEEN={};
+const telRaw=on=>{ TRAW=on; telemetry(); };
+
 /* ---------- Telemetry tab (combined across the hive, sort+filter) ---------- */
 let TP=1, TF={sort:'recent',fnode:'',fproject:'',fagent:'',fday:'',fmodel:''};
 const goTel=p=>{TP=p;telemetry();window.scrollTo({top:0});};
 const telReload=()=>{TF.sort=$('#tsort').value;TF.fnode=$('#tnode').value;TF.fproject=$('#tproj').value;TF.fagent=$('#tagent').value;TP=1;telemetry();};
-const telFilterModel=m=>{TF.fmodel=m;TP=1;telemetry();};
-const telFilterDay=d=>{TF.fday=d;TP=1;telemetry();};
+const telFilterModel=m=>{TRAW=true;TF.fmodel=m;TP=1;telemetry();};
+const telFilterDay=d=>{TRAW=true;TF.fday=d;TP=1;telemetry();};
 async function telemetry(){
   put($('#app'),spin('aggregating telemetry across the hive…'));
   const p=new URLSearchParams({scope:'hive',sort:TF.sort,limit:String(PER),offset:String((TP-1)*PER)});
@@ -749,10 +780,11 @@ async function telemetry(){
   const chips=[];
   if(TF.fday) chips.push(html`<span class="chip proj">day: ${TF.fday} <a class="pointer" onclick=${()=>telFilterDay('')}>×</a></span>`);
   if(TF.fmodel) chips.push(html`<span class="chip proj">model: ${TF.fmodel} <a class="pointer" onclick=${()=>telFilterModel('')}>×</a></span>`);
-  put($('#app'),controls,chips.length?html`<div class="controls">${chips}</div>`:null,line,nodesPanel,
-    (t.totals&&t.totals.sessions!==undefined?telemetryBody(t,TP,goTel,true,true):empty('no sessions')));
-  $('#tsort').value=TF.sort;
-  ['tsort','tnode','tproj','tagent'].forEach(id=>{const e=$('#'+id);if(e)e.onchange=telReload;});
+  const raw=html`<div class="panel"><button class="btn" aria-pressed=${String(TRAW)} onclick=${()=>telRaw(!TRAW)}>${TRAW?'Hide raw tables':'Raw: show filters and tables'}</button></div>`;
+  put($('#app'),telStory(t,devs),nodesPanel,raw,
+    TRAW?html`${controls}${chips.length?html`<div class="controls">${chips}</div>`:null}${line}${t.totals&&t.totals.sessions!==undefined?telemetryBody(t,TP,goTel,true,true,true):empty('no sessions')}`:null);
+  if(TRAW){ $('#tsort').value=TF.sort;
+  ['tsort','tnode','tproj','tagent'].forEach(id=>{const e=$('#'+id);if(e)e.onchange=telReload;}); }
 }
 
 /* ---------- Per-node drill-down ---------- */
