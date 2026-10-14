@@ -95,6 +95,14 @@ def test_d5_module_identities_nest_under_their_host_device():
     hive = JS[JS.index("function peerRows"):JS.index("function moduleIdentities")]
     assert "group purge" in hive and "gone?" in hive
     assert "group purge" not in JS[JS.index("function moduleIdentities"):JS.index("async function hive()")]
+    # Pin the guards themselves: the substring checks above survive `const gone=true`, `ids.has(m.host)||1`, and a purge
+    # hint pasted into a nested row.
+    assert "const gone=!p.self&&/stale|offline/.test(p.status);" in hive and "${gone?html`" in hive
+    assert "group purge ${p.device}" in hive
+    assert "if(typeof m.host==='string'&&ids.has(m.host)) (nested[m.host]" in JS
+    rows = [JS[m.start():JS.index("</tr>", m.start())] for m in re.finditer(r"modrow", JS) if "<tr" in JS[max(0, m.start() - 20):m.start()]]
+    assert len(rows) == 2                                     # the Hive nested row and the Telemetry one
+    assert all("group purge" not in r for r in rows)
     tel = JS[JS.index("async function telemetry()"):JS.index("Per-node drill-down")]
     assert "/api/peers?probe=0" in tel and "isModuleRow(p)" in tel and "Devices</h2>" in tel and "Module identities" in tel
 

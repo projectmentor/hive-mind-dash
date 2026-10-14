@@ -19,6 +19,12 @@ for the loopback Host, and maps the page's `/api/*` reads to the core's signed `
 audit, peers, verify, search, item) or, for status, telemetry, entities and a peer's `?node=` view, to the sync
 daemon's loopback `/api/*`. `/v1/search` and `/v1/item` leave out facts the owner forgot, which the old page showed.
 
+## Hive and Telemetry: devices and module identities
+
+**Hive** lists the devices admitted to the group, one row each: name, device id, principal, address, last seen and status. A module that holds an admitted key of its own (a module identity) is not a device. When the core reports the device it runs on (the `host` field on `/api/peers`), that identity nests under its device: the device row shows a `▸` toggle and "N modules", and the toggle (`▾` when open) expands one indented row per identity, each linking to Modules › name. A module identity with no `host`, or whose host is not listed, is not hidden: it stays in one **Module identities** section grouped by module name. A core that sends no `module` field shows every row as a device, as before. The **Telemetry** devices list splits the same way, under **Devices** and **Module identities**, and shares the open or closed state of each device with Hive.
+
+The purge hint (`hive-mind group purge <device>`, for removing a device that will not return) appears only on a device row that is stale or offline. It is never on the current device, never on an online device, and never on a nested module identity row; purge a module identity by removing the module, not the device.
+
 ## What it will do
 
 - **Come with HiveMind.** A first-party module, installed by default on every device; a device may remove it.
