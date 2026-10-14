@@ -1,0 +1,1 @@
+- Settings › Node: the Fleet / This device split, the owner-key note and the active tab are now covered by behaviour tests; the owner-key note shows when there are fleet keys (it was inverted); switching tabs keeps unsaved input (hive-mind-dash#41).
