@@ -81,5 +81,20 @@ def test_module_identities_are_not_listed_as_peer_devices():
     device, so the filter keys on the field being a non-empty string, not on its absence."""
     assert "typeof p.module==='string'&&p.module!==''" in JS
     assert "all.filter(p=>!isModuleRow(p))" in JS and "all.filter(isModuleRow)" in JS
-    assert "Module identities" in JS and "${moduleIdentities(mods)}" in JS
-    assert "peers.length} admitted" in JS                       # the Peers count is devices only
+    assert "Module identities" in JS and "${moduleIdentities(g.loose)}" in JS
+    assert "g.devices.length} admitted" in JS                   # the Devices count is devices only
+
+
+def test_d5_module_identities_nest_under_their_host_device():
+    """D5 (overview v2 §6): with `host` a module identity nests under its device (collapsed, expandable, linked to
+    Modules › name); with no `host`, or a host that is not listed, it stays in the one section grouped by module name. The purge
+    hint is on a device row only, and the Telemetry devices list splits the same way."""
+    assert "typeof m.host==='string'&&ids.has(m.host)" in JS and "else loose.push(m)" in JS
+    assert "aria-expanded=" in JS and "openModule(m.module)" in JS and "setNav('modules')" in JS
+    assert "HOPEN[p.device]" in JS and "kids.forEach" in JS
+    hive = JS[JS.index("function peerRows"):JS.index("function moduleIdentities")]
+    assert "group purge" in hive and "gone?" in hive
+    assert "group purge" not in JS[JS.index("function moduleIdentities"):JS.index("async function hive()")]
+    tel = JS[JS.index("async function telemetry()"):JS.index("Per-node drill-down")]
+    assert "/api/peers?probe=0" in tel and "isModuleRow(p)" in tel and "Devices</h2>" in tel and "Module identities" in tel
+
