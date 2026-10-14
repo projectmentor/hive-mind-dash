@@ -626,33 +626,52 @@ const openContested=()=>{state.node=null;state.detail=null;state.view='corpus';C
 
 /* ---------- Hive ---------- */
 const dotFor=s=>({'in sync':'ok','reachable':'ok','admitted':'ok','diverged':'stale','stale':'stale','offline':'off'}[s]||'off');
-function peerRows(peers,probing){
-  return peers.map(p=>{const cls=p.self?'self':dotFor(p.status);
-    const st=p.self?p.status:(probing&&!/stale|offline/.test(p.status)?[html`<span class="spin sm"></span>`,' resolving…']:p.status);
-    return html`<tr class="link" onclick=${()=>openNode(p.device)} title="View this node">
-      <td><span class=${'dot '+cls}></span>${p.name}</td><td class="mono">${p.device}</td><td>${p.principal}</td>
-      <td class="mono">${p.addr}</td><td>${p.seen}</td><td>${st}</td></tr>`;});
-}
 /* A module identity is an admitted key of its own (`module` names it); it is not a device. A core that sends no `module`
-   field leaves every row a device, as before. Core records no host device for a module, so they group by module name. */
+   field leaves every row a device, as before. With `host` (the device id) a module identity nests under its device; without it,
+   or when the host is not in the list, it joins one section of its own grouped by module name. */
 const isModuleRow=p=>typeof p.module==='string'&&p.module!=='';
+function groupPeers(all){
+  const devices=all.filter(p=>!isModuleRow(p)), ids=new Set(devices.map(p=>p.device)), nested={}, loose=[];
+  all.filter(isModuleRow).forEach(m=>{ if(typeof m.host==='string'&&ids.has(m.host)) (nested[m.host]=nested[m.host]||[]).push(m); else loose.push(m); });
+  Object.values(nested).forEach(a=>a.sort((x,y)=>x.module<y.module?-1:x.module>y.module?1:0));
+  return {devices,nested,loose};
+}
+const openModule=name=>{MP={name,tab:'overview'};state.view='modulePage';state.node=null;state.detail=null;setNav('modules');render();};
+const modLink=m=>html`<button class="linkbtn" type="button" onclick=${()=>openModule(m.module)} title=${"Open Modules › "+m.module}>${m.module}</button>`;
+let HOPEN={};   // device ids whose module identities are expanded (Hive and Telemetry share it)
+const toggleHost=(id,again)=>{ HOPEN[id]=!HOPEN[id]; again(); };
+const hostBtn=(d,n,again)=>n?html`<button class="twist" type="button" aria-expanded=${HOPEN[d.device]?'true':'false'} title=${n+' module identit'+(n===1?'y':'ies')+' on this device'} onclick=${e=>{e.stopPropagation();toggleHost(d.device,again);}}>${HOPEN[d.device]?'▾':'▸'}</button>`:html`<span class="twist"></span>`;
+const modCount=n=>n?html` <span class="c-dim sm">${n} module${n===1?'':'s'}</span>`:null;
+function peerRows(peers,probing,nested,again){
+  const out=[];
+  peers.forEach(p=>{const cls=p.self?'self':dotFor(p.status), kids=nested[p.device]||[];
+    const st=p.self?p.status:(probing&&!/stale|offline/.test(p.status)?[html`<span class="spin sm"></span>`,' resolving…']:p.status);
+    const gone=!p.self&&/stale|offline/.test(p.status);
+    out.push(html`<tr class="link" onclick=${()=>openNode(p.device)} title="View this node">
+      <td>${hostBtn(p,kids.length,again)}<span class=${'dot '+cls}></span>${p.name}${modCount(kids.length)}
+        ${gone?html`<div class="sub c-dim">to remove a device that will not return: <span class="mono">hive-mind group purge ${p.device}</span></div>`:null}</td><td class="mono">${p.device}</td><td>${p.principal}</td>
+      <td class="mono">${p.addr}</td><td>${p.seen}</td><td>${st}</td></tr>`);
+    if(HOPEN[p.device]) kids.forEach(m=>out.push(html`<tr class="modrow"><td class="nest"><span class="dot off"></span>${modLink(m)} <span class="c-dim sm">module identity</span></td><td class="mono">${m.device}</td><td>${m.principal}</td><td class="mono">${m.addr}</td><td>${m.seen}</td><td>${m.status}</td></tr>`));
+  });
+  return out;
+}
 function moduleIdentities(mods){
   if(!mods.length) return null;
   const names=[...new Set(mods.map(p=>p.module))].sort();
   return html`<div class="panel"><h2>Module identities <span class="count">${mods.length} admitted</span></h2>
     <table><thead><tr><th>Module</th><th>Identities</th><th>Last seen</th></tr></thead>
     <tbody>${names.map(n=>{const ids=mods.filter(p=>p.module===n);
-      return html`<tr><td>${n}</td><td class="mono">${ids.map(p=>html`<div>${p.device}</div>`)}</td><td>${ids.map(p=>html`<div>${p.seen}</div>`)}</td></tr>`;})}</tbody></table></div>
+      return html`<tr><td>${modLink(ids[0])}</td><td class="mono">${ids.map(p=>html`<div>${p.device}</div>`)}</td><td>${ids.map(p=>html`<div>${p.seen}</div>`)}</td></tr>`;})}</tbody></table></div>
     <div class="note">Each installed module has its own admitted key. They are not devices and are not duplicates: do not purge them.</div>`;
 }
 function hiveShell(all,probing){
-  const peers=all.filter(p=>!isModuleRow(p)), mods=all.filter(isModuleRow);
-  const rows=peerRows(peers,probing);
-  put($('#app'),html`<div class="panel"><h2>Peers <span class="count">${peers.length} admitted</span>${probing?html`<span class="spin sm"></span>`:null}</h2>
+  const g=groupPeers(all), again=()=>hiveShell(all,probing);
+  const rows=peerRows(g.devices,probing,g.nested,again);
+  put($('#app'),html`<div class="panel"><h2>Devices <span class="count">${g.devices.length} admitted</span>${probing?html`<span class="spin sm"></span>`:null}</h2>
      <table><thead><tr><th>Name</th><th>Device</th><th>Principal</th><th>Address</th><th>Last seen</th><th>Status</th></tr></thead>
      <tbody>${rows.length?rows:html`<tr><td colspan="6" class="empty">no peers</td></tr>`}</tbody></table></div>
-   ${moduleIdentities(mods)}
-   <div class="note">Click a node for its overview, corpus, stats &amp; telemetry · Stale device? Owner: <span class="mono">hive-mind group purge &lt;device_id&gt;</span></div>
+   ${moduleIdentities(g.loose)}
+   <div class="note">Click a device for its overview, corpus, stats &amp; telemetry. The ▸ beside a device opens the module identities on it.</div>
    <div class="grid cards mt16">
      <div class="card"><div class="lbl">Owner</div><div class="stat fs17">${META.role==='OWNER'?META.node:'(remote)'}</div><div class="sub mono" title="public id — the owner key itself is never shown">${META.owner_id||'—'}${META.owner_id?html` <span class="muted">(public id)</span>`:null}</div></div>
      <div class="card"><div class="lbl">Hive</div><div class="stat mono fs14 c-ink">${META.hive||'—'}</div></div>
@@ -714,7 +733,17 @@ async function telemetry(){
      <select id="tagent"><option value="">All agents</option>${opt(fac.agents,TF.fagent)}</select>
    </div>`;
   const line=html`<div class="note"><b>${admitted} admitted · ${online} online · ${reporting} reporting telemetry</b>${noTel?` · ${noTel} online without telemetry (older code — joins after update)`:''}${off?` · ${off} offline`:''}. Telemetry is local to each node, aggregated live over the tailnet.</div>`;
-  const nodesPanel=html`<div class="panel"><h2>${(t.nodes||[]).length} Nodes</h2><table><thead><tr><th>Node</th><th>Sessions</th><th>Status</th></tr></thead><tbody>${(t.nodes||[]).map(n=>html`<tr class=${'link'+(n.status==='offline'?' off':'')} onclick=${()=>openNode(n.node_id)}><td><span class=${'dot '+dotForNode(n.status)}></span>${n.node}</td><td>${fmtNum(n.sessions)}</td><td>${statusText(n.status)}</td></tr>`)}</tbody></table></div>`;
+  let pr=[]; try{ pr=(await getJSON('/api/peers?probe=0')).peers; }catch(e){}
+  const mrow={}; pr.forEach(p=>{ if(isModuleRow(p)) mrow[p.device]=p; });
+  const isMod=n=>!!mrow[n.node_id], devs=(t.nodes||[]).filter(n=>!isMod(n)), nest={}, loose=[];
+  (t.nodes||[]).filter(isMod).forEach(n=>{ const m=mrow[n.node_id], h=typeof m.host==='string'&&devs.some(d=>d.node_id===m.host)?m.host:null; if(h) (nest[h]=nest[h]||[]).push(n); else loose.push(n); });
+  const modName=n=>mrow[n.node_id].module, again=()=>telemetry();
+  const modTr=n=>html`<tr class=${'modrow'+(n.status==='offline'?' off':'')}><td class="nest"><span class=${'dot '+dotForNode(n.status)}></span>${modLink(mrow[n.node_id])} <span class="c-dim sm">module identity</span></td><td>${fmtNum(n.sessions)}</td><td>${statusText(n.status)}</td></tr>`;
+  const nodeTrs=devs.flatMap(n=>{ const kids=nest[n.node_id]||[];
+    return [html`<tr class=${'link'+(n.status==='offline'?' off':'')} onclick=${()=>openNode(n.node_id)}><td>${hostBtn({device:n.node_id},kids.length,again)}<span class=${'dot '+dotForNode(n.status)}></span>${n.node}${modCount(kids.length)}</td><td>${fmtNum(n.sessions)}</td><td>${statusText(n.status)}</td></tr>`,
+      ...(HOPEN[n.node_id]?kids.map(modTr):[])]; });
+  const nodesPanel=html`<div class="panel"><h2>${devs.length} Devices</h2><table><thead><tr><th>Device</th><th>Sessions</th><th>Status</th></tr></thead><tbody>${nodeTrs}</tbody></table></div>
+    ${loose.length?html`<div class="panel"><h2>Module identities <span class="count">${loose.length} admitted</span></h2><table><thead><tr><th>Module</th><th>Sessions</th><th>Status</th></tr></thead><tbody>${loose.sort((x,y)=>modName(x)<modName(y)?-1:1).map(modTr)}</tbody></table></div>`:null}`;
   const chips=[];
   if(TF.fday) chips.push(html`<span class="chip proj">day: ${TF.fday} <a class="pointer" onclick=${()=>telFilterDay('')}>×</a></span>`);
   if(TF.fmodel) chips.push(html`<span class="chip proj">model: ${TF.fmodel} <a class="pointer" onclick=${()=>telFilterModel('')}>×</a></span>`);

@@ -298,3 +298,7 @@ button.help:focus-visible,nav button:focus-visible,.btn:focus-visible{outline:2p
 .mhealth{margin-left:auto}
 .widget .legend{margin-top:8px}
 .viz.ring{max-width:200px;margin:0 auto}
+.twist{display:inline-block;width:18px;margin-right:2px;padding:0;border:0;background:none;color:var(--dim);font-size:12px;cursor:pointer;text-align:center}
+.linkbtn{padding:0;border:0;background:none;color:var(--accent);font:inherit;cursor:pointer;text-decoration:underline}
+tr.modrow td{background:var(--surface)} tr.modrow td.nest{padding-left:34px}
+.c-dim.sm{font-size:11px}
