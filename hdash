@@ -10,7 +10,7 @@ carry the CSRF token (`/api/csrf`) before a route is even looked up (P3). The on
 which runs `hconfig set` (the value on stdin, never argv); hdash signs nothing and never holds the owner passphrase.
 The page's `/api/*` calls are mapped to the core's read routes:
 
-  overview, tags, related, audit, peers, verify, search, item   -> signed `GET /v1/<route>` (the module API;
+  overview, tags, related, audit, peers, verify, search, item, series   -> signed `GET /v1/<route>` (the module API;
                                                                      the manifest's `reads` names them)
   status, telemetry, entities, and any call with `?node=<peer>` -> the sync daemon's loopback `/api/<route>`
                                                                      (which also does the signed per-node proxy)
@@ -66,7 +66,7 @@ STATIC = {
 PAGES = {"/": "index.html", "/index.html": "index.html", "/dashboard": "index.html", "/dashboard/": "index.html",
          "/logo.svg": "logo.svg", "/favicon.svg": "favicon.svg", "/app.js": "app.js", "/app.css": "app.css",
          "/viz.js": "viz.js"}
-V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item")
+V1_READS = ("overview", "tags", "related", "audit", "peers", "verify", "search", "item", "series")
 DAEMON_ONLY = ("status", "telemetry", "entities")
 LOCAL_ROUTES = ("modules", "module", "settings", "workspace")     # answered by hdash itself (Settings and the module page), this node only
 API_ROUTES = V1_READS + DAEMON_ONLY + LOCAL_ROUTES
@@ -882,7 +882,7 @@ VIEWER_RECORDS_PATH = "/api/config/records"
 VIEWER_ROUTES = {        # route -> the query parameters it takes; anything else (`node` above all) is a 403
     "overview": (), "tags": ("counts",), "audit": (), "verify": (), "peers": (),
     "search": ("q", "tag", "kind", "min_confidence", "limit", "offset", "sort", "status"),
-    "related": ("kind", "id"), "item": ("sid",),
+    "related": ("kind", "id"), "item": ("sid",), "series": ("days",),
 }
 VIEWER_PARAM_MAX = 512
 LOGIN_MAX = 256

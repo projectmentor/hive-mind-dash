@@ -16,9 +16,9 @@ def test_the_overview_has_the_d2_widgets_and_reads_only_existing_routes():
     for id_ in ("ovFacts", "ovDecs", "ovIdeas", "ovContested", "ovOnline", "ovShield", "ovFleet", "ovMix", "ovAudit", "ovModules", "ovApprovals"):
         assert f"'{id_}'" in OV, id_
     routes = set(re.findall(r"'(/api/[a-z/]+)", OV))
-    assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules"}
+    assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules", "/api/series"}
     assert "/api/peers?probe=0" in OV and "kind=idea&limit=1" in OV and "ideas_total" in OV
-    assert "/v1/series" not in OV and "/api/series" not in OV                   # no new core route (L1)
+    assert "/v1/series" not in OV                                                # the page goes through hdash's /api/series
 
 
 def test_a_viewer_page_leaves_out_what_the_viewer_listener_refuses():
@@ -65,7 +65,7 @@ def test_d3_widgets_exist_and_the_operator_only_ones_are_left_out_for_a_viewer()
         assert f"'{id_}'" in OV, id_
     for id_ in ("ovSeats", "ovSpend", "ovActivity"):
         assert f"${{VIEWER?null:widget('w" in OV and re.search(r"VIEWER\?null:widget\('w\d+','%s'" % id_, OV), id_
-    assert not re.search(r"VIEWER\?null:widget\('w\d+','ovGrowth'", OV)          # corpus growth reads /api/search, which a viewer may
+    assert not re.search(r"VIEWER\?null:widget\('w\d+','ovGrowth'", OV)          # corpus growth reads /api/series, which a viewer may
 
 
 def test_d3_adds_no_per_device_read_and_no_new_route():
@@ -73,8 +73,8 @@ def test_d3_adds_no_per_device_read_and_no_new_route():
     assert OV.count("fnode=") == 1 and "Array.isArray(n.by_day)" in OV and OV.count("OV_SPARK_CAP") == 3
     assert "(OVD.perDay=OVD.perDay||{})[n.node_id]" in OV and "ovFleet(); ovActivity();" in OV
     routes = set(re.findall(r"'(/api/[a-z/]+)", OV))
-    assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules"}
-    assert "/api/series" not in OV and "/v1/series" not in OV
+    assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules", "/api/series"}
+    assert "/api/series?days=90" in OV and "gfacts" not in OV and "gdecs" not in OV
     assert OV.count("/api/telemetry?scope=hive") == 2                              # the one hive read and the older-core fallback read
 
 
@@ -87,7 +87,7 @@ def test_d3_one_hive_read_feeds_seat_activity_and_spend():
 
 def test_d3_interim_labels_say_what_the_numbers_are():
     assert "all time, priced models only" in OV and "Price unknown" in OV
-    assert "newest 200 facts and 200 decisions" in OV and "sort=recency&limit=200" in OV
+    assert "Facts, decisions and ideas added per day" in OV and "/api/series?days=90" in OV
     assert "no sessions in 7 days" in OV and "no sessions recorded on any device" in OV and "no session with a known price yet" in OV
 
 
