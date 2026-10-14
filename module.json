@@ -11,6 +11,7 @@
   "port": {
    "default": "9896",
    "description": "Loopback port the dashboard listens on",
+   "help": "The port number the dashboard uses on this device. You open it in your browser at http://127.0.0.1 followed by this port. It only answers from this device, not from the network. Change it only if another program already uses port 9896. Restart the dashboard after changing it.",
    "max": 65535,
    "min": 1024,
    "scope": "node",
@@ -28,7 +29,7 @@
   ".github/workflows/ci.yml": "84f93f63e6b6ab26f3040843e3a8895e169359565f69091a31576e794ab2a9d3",
   ".gitignore": "a51104264729e7b362ea8c739de0ada29ba6e4f6047580ec3a3fd330ad20fd47",
   "LICENSE": "83f60adac17c1b2f689fa5213069b48ab1df40fe4cbb98fd2d91d833d8a72098",
-  "README.md": "d60d77fa11acc7747d791dc236dfe92b9132620023667129841d95c9d6f8e95e",
+  "README.md": "8af21577270b28d5827d47079488289866650f9dffd231d4614ff9c6e3ae266c",
   "changelog.d/feat-hdash-extraction.md": "34dde2aec2f767831726524b07223db7e6aa4be2fc5e011b2bae8a791692e501",
   "changelog.d/implementer-hdash-config-forms.md": "bada5d11632fe4b734c3d9657808186eebb90619616ae72c64d5ff20126502c4",
   "changelog.d/implementer-hdash-viewer.md": "b672443b365c85ff05848188a2934271927dcbc85c458e6ee677feaffdf6ca77",
@@ -43,6 +44,7 @@
   "changelog.d/implementer2-hdash-spend-governance.md": "c06ca757dca6e3e1c48378e61330ecc1b3c4982464b19b2861df844a8057c0d7",
   "changelog.d/implementer2-hdash-workspaces.md": "423fb085c293ba3d6d3d8b8aa97f38538e4ce3d5e9247f5d71f43f296d692002",
   "changelog.d/implementer3-dash-help-popover.md": "24c2a45b438b5f538c89c21ec8ff60c5993e737337beea58e03f5e79ec073b04",
+  "changelog.d/implementer3-dash-port-help.md": "585564af106963fa9b90c1fa90310c18bde2fd2ebd23de6f7e82731aceeb907b",
   "changelog.d/implementer3-hdash-p2-modules-page.md": "c77c44d090f106ef0ac7aab83cff584044a23b9be036690612fe59fe841da210",
   "changelog.d/implementer3-hdash-p3-origin-csrf.md": "1ce72ffc0ebd111f22d701b073a321230e21d5fcfc49724a41f97ddfe5c7107d",
   "changelog.d/implementer3-hdash-p3-tests.md": "20f84f61da2b54ac5752ba201b8e61805b173f220a2bcd4852b3083514ec1b83",
@@ -68,7 +70,7 @@
   "tests/test_visual_system.py": "f41a5110a6a7428590baf66d19f0b12495c2313c0bb8baefd30f52815eb56fc0",
   "tests/test_workspaces.py": "853b578cee27b7a694269c172eaa2dddb56cc203a4952c66686da33b70fa69ce"
  },
- "min_core": "4.0",
+ "min_core": "4.1",
  "name": "hdash",
  "publisher": "IdtMxPCOYmx47k0NNrOqSCHokJvgPmRuwP9WvE9tDBc=",
  "reads": [
