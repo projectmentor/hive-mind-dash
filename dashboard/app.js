@@ -1006,7 +1006,7 @@ function settingRow(r){
   const id=r.id, src=SRC_LABEL[r.source]||(r.source||'unset');
   const meta=html`<div class="c-dim fs12">${r.description||''}${r.min!=null||r.max!=null?` (${showVal(r.min)} .. ${showVal(r.max)})`:''}${r.identifying?' · identifying':''}${r.secret?' · secret':''}</div>${(r.warnings||[]).map(w=>html`<div class="c-accent fs12">${w}</div>`)}`;
   const head=html`<td><span class="mono">${id}</span>${helpIcon(id,r.help)}${meta}</td><td><span class="chip">${src}</span>${r.set_by&&r.set_by.ts?html`<div class="c-dim fs12">set ${r.set_by.ts}</div>`:null}</td>`;
-  if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: set a concrete key with <span class="mono">hconfig set</span></td></tr>`;
+  if(r.template) return html`<tr>${head}<td colspan="2" class="c-dim">a template: add a key with <span class="mono">hconfig set</span></td></tr>`;
   if(r.writable_by==='owner'&&id.startsWith('core:')) return html`<tr>${head}<td>${shownVal(r)}</td><td><div class="c-dim fs12">Read-only here. The owner changes it on the operator's terminal:</div>${r.write_via?cmdBlock(r.write_via):null}</td></tr>`;
   if(r.source==='env') return html`<tr>${head}<td>${showVal(r.value)}</td><td class="c-dim fs12">Overridden by <span class="mono">${r.env||'an environment variable'}</span>; unset it to edit this key.</td></tr>`;
   const tr=html`<tr>${head}<td>${settingInput(r)}${r.set||r.secret||r.type==='bool'||r.type==='enum'?null:html`<div class="c-dim fs12">${['','—'].includes(showVal(r.default))?'not set':'not set: default ('+showVal(r.default)+')'}</div>`}</td><td><button class="btn sv-save">Save</button><div class="sv-msg fs12"></div></td></tr>`;
@@ -1032,13 +1032,28 @@ function wireRow(frag,r){
   return frag;
 }
 const settingsTable=keys=>keys.length?html`<table><thead><tr><th>Key</th><th>Source</th><th>Value</th><th></th></tr></thead><tbody>${keys.map(settingRow)}</tbody></table>`:empty('No settings.');
+/* Fleet = governed keys (owner-signed, shared by every device); This device = node and module keys (this device only). */
+const prefixOf=id=>{ const i=id.indexOf(':'); return i<0?'other':id.slice(0,i+1); };
+const settingsGroups=keys=>{
+  const by=new Map();
+  keys.forEach(k=>{ const p=prefixOf(k.id); if(!by.has(p)) by.set(p,[]); by.get(p).push(k); });
+  return [...by.entries()].sort((x,y)=>x[0]<y[0]?-1:1).map(([p,ks])=>html`<h3 class="mono">${p}</h3>${settingsTable(ks)}`);
+};
+let SETTINGS_TAB='device';
 function settingsPanel(prefix,cls){
   const box=html`<div>${spin()}</div>`.firstElementChild;
-  getJSON('/api/settings?'+new URLSearchParams(Object.assign({prefix},cls?{class:cls}:{}))).then(r=>{
-    const fleet=r.keys.filter(k=>k.class==='governed'), nodeK=r.keys.filter(k=>k.class!=='governed');
-    put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
-      ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}
-      ${nodeK.length?html`<h3>Per-node</h3>${settingsTable(nodeK)}`:null}${fleet.length?html`<h3>Fleet (owner-signed)</h3>${settingsTable(fleet)}`:null}${!r.keys.length?empty('No settings.'):null}`);
+  getJSON('/api/settings?'+new URLSearchParams(Object.assign({},prefix?{prefix}:{},cls?{class:cls}:{}))).then(r=>{
+    const fleet=r.keys.filter(k=>k.class==='governed'), dev=r.keys.filter(k=>k.class!=='governed');
+    const show=()=>{
+      const tabs=[['fleet','Fleet',fleet],['device','This device',dev]];
+      const body=SETTINGS_TAB==='fleet'
+        ?html`<div class="note">Settings signed by the owner and shared by every device in the hive.${fleet.length?'':' An unlocked owner key is needed to change them.'}</div>${fleet.length?settingsGroups(fleet):empty('No fleet settings.')}`
+        :html`<div class="note">Settings that apply to this device only.</div>${dev.length?settingsGroups(dev):empty('No device settings.')}`;
+      put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
+        ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}
+        <div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===SETTINGS_TAB?' active':'')} onclick=${()=>{SETTINGS_TAB=t[0];show();}}>${t[1]} <span class="c-dim">${t[2].length}</span></button>`)}</div>${body}`);
+    };
+    show();
   }).catch(()=>put(box,empty('settings unavailable — is hconfig installed on this node? (hive-mind module add hconfig)')));
   return box;
 }
@@ -1050,7 +1065,7 @@ async function viewerSettings(){
 async function settingsNode(){
   if(VIEWER) return viewerSettings();
   put($('#app'),html`<div class="crumb"><span class="who">Settings › Node</span></div>`,
-    html`<div class="panel"><h2>Node</h2>${settingsPanel('node:','node')}<h2>Core governed keys</h2>${settingsPanel('core:','governed')}</div>`);
+    html`<div class="panel"><h2>Settings</h2>${settingsPanel('')}</div>`);
 }
 
 /* ---------- Workspaces (Agents, Trust, Spend, Governance): defined here; a module only declares the panels that fill a slot ---------- */
