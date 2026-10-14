@@ -1,4 +1,4 @@
-"""D2 of hdash 0.2 (hdash_overview_v2 §3): the Overview as a grid of widgets. No browser in CI, so these pin the shipped files."""
+"""D2 and D3 of hdash 0.2 (hdash_overview_v2 §3): the Overview as a grid of widgets. No browser in CI, so these pin the shipped files."""
 import re
 from pathlib import Path
 
@@ -57,3 +57,47 @@ def test_data_stays_text_and_no_literal_colour():
 def test_the_hatched_ring_slice_keeps_its_length():
     assert "stroke-dasharray:none" not in CSS and ".viz .hatch{" not in CSS      # a CSS dash rule beats the slice's own dasharray and drew a full circle over the others
     assert ".viz rect.hatch{" in CSS
+
+
+# ---- D3: corpus growth, seat activity, spend this week, activity (hdash_overview_v2 §3 widgets 3, 6, 7, 11) ----
+def test_d3_widgets_exist_and_the_operator_only_ones_are_left_out_for_a_viewer():
+    for id_ in ("ovGrowth", "ovSeats", "ovSpend", "ovActivity"):
+        assert f"'{id_}'" in OV, id_
+    for id_ in ("ovSeats", "ovSpend", "ovActivity"):
+        assert f"${{VIEWER?null:widget('w" in OV and re.search(r"VIEWER\?null:widget\('w\d+','%s'" % id_, OV), id_
+    assert not re.search(r"VIEWER\?null:widget\('w\d+','ovGrowth'", OV)          # corpus growth reads /api/search, which a viewer may
+
+
+def test_d3_adds_no_per_device_read_and_no_new_route():
+    # the 21-day Activity chart and the 14-day sparklines draw from the same one-per-device read
+    assert OV.count("fnode=") == 1 and OV.count("OV_SPARK_CAP") == 3
+    assert "(OVD.perDay=OVD.perDay||{})[n.node_id]" in OV and "ovFleet(); ovActivity();" in OV
+    routes = set(re.findall(r"'(/api/[a-z/]+)", OV))
+    assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules"}
+    assert "/api/series" not in OV and "/v1/series" not in OV
+    assert OV.count("/api/telemetry?scope=hive") == 2                              # the one hive read and the per-device read
+
+
+def test_d3_one_hive_read_feeds_seat_activity_and_spend():
+    assert "scope=hive&limit=200&sort=recent'" in OV
+    tail = OV[OV.index("ld('tel'"):]
+    assert "ovSeats(); ovSpend(); ovActivity();" in tail.split("\n")[0]
+    assert "t.recent" in OV and "t.by_model" in OV and "t.totals" in OV
+
+
+def test_d3_interim_labels_say_what_the_numbers_are():
+    assert "all time, priced models only" in OV and "Price unknown" in OV
+    assert "newest 200 facts and 200 decisions" in OV and "sort=recency&limit=200" in OV
+    assert "no sessions in 7 days" in OV and "no sessions recorded on any device" in OV and "no session with a known price yet" in OV
+
+
+def test_d3_data_stays_text():
+    block = OV[OV.index("function ovGrowth"):OV.index("function ovFetch")]
+    assert not re.search(r"innerHTML|insertAdjacentHTML|style\s*=", block)
+
+
+def test_d3_activity_window_fits_the_daemon_by_day_cap():
+    # core _tel_aggregate returns by_day[-21:] per device; a longer window would draw the older days as zero and undercount
+    assert "const OV_ACT_DAYS=21;" in OV and "ovDays(OV_ACT_DAYS)" in OV
+    assert "ovDays(90)" not in OV.split("function ovActivity")[1].split("function ovFetch")[0]
+    assert "last 90 days" not in OV.split("function ovActivity")[1].split("function ovFetch")[0]
