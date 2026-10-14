@@ -88,6 +88,8 @@ const spin=t=>html`<div class="loading"><span class="spin"></span> ${t||'loading
 const empty=t=>html`<div class="empty">${t}</div>`;
 const fmtDur=s=>{s=Math.round(s||0);const h=(s/3600)|0,m=((s%3600)/60)|0;return h?`${h}h${String(m).padStart(2,'0')}m`:`${m}m`;};
 const fmtNum=n=>(n||0).toLocaleString();
+/* A peer's last-seen: core's `seen_at` (a full timestamp, hive-mind#498) to the minute in UTC; an older core sends only the date `seen`. */
+const fmtSeen=p=>{ const t=p&&p.seen_at?new Date(p.seen_at):null; return t&&!isNaN(t)?t.toISOString().slice(0,16).replace('T',' ')+' UTC':p&&p.seen; };
 const fmtCost=c=>c==null?'unpriced':'~$'+Number(c).toFixed(2);
 const PER=25;
 let META={}, state={view:'overview',node:null,nodeTab:'overview',detail:null}, PEERS=[];
@@ -294,7 +296,7 @@ function ovDevices(){
   return ps.filter(p=>!isModuleRow(p)).map(p=>{
     const t=tn[p.device];
     const st=p.self||(t&&(t.status==='online'||t.status==='self'))?'online':/diverged|stale/.test(p.status)?'diverged':/in sync|reachable/.test(p.status)?'in sync':p.status==='admitted'?'not checked':'offline';
-    return {name:p.name,device:p.device,self:!!p.self,seen:p.seen,state:st,online:st==='online'||st==='in sync'||st==='diverged'};
+    return {name:p.name,device:p.device,self:!!p.self,seen:fmtSeen(p),state:st,online:st==='online'||st==='in sync'||st==='diverged'};
   });
 }
 const ovDot=d=>d.self?'self':d.state==='online'||d.state==='in sync'?'ok':d.state==='diverged'?'stale':'off';
@@ -669,8 +671,8 @@ function peerRows(peers,probing,nested,again){
     out.push(html`<tr class="link" onclick=${()=>openNode(p.device)} title="View this node">
       <td>${hostBtn(p,kids.length,again)}<span class=${'dot '+cls}></span>${p.name}${modCount(kids.length)}
         ${gone?html`<div class="sub c-dim">to remove a device that will not return: <span class="mono">hive-mind group purge ${p.device}</span></div>`:null}</td><td class="mono">${p.device}</td><td>${p.principal}</td>
-      <td class="mono">${p.addr}</td><td>${p.seen}</td><td>${st}</td></tr>`);
-    if(HOPEN[p.device]) kids.forEach(m=>out.push(html`<tr class="modrow"><td class="nest"><span class="dot off"></span>${modLink(m)} <span class="c-dim sm">module identity</span></td><td class="mono">${m.device}</td><td>${m.principal}</td><td class="mono">${m.addr}</td><td>${m.seen}</td><td>${m.status}</td></tr>`));
+      <td class="mono">${p.addr}</td><td>${fmtSeen(p)}</td><td>${st}</td></tr>`);
+    if(HOPEN[p.device]) kids.forEach(m=>out.push(html`<tr class="modrow"><td class="nest"><span class="dot off"></span>${modLink(m)} <span class="c-dim sm">module identity</span></td><td class="mono">${m.device}</td><td>${m.principal}</td><td class="mono">${m.addr}</td><td>${fmtSeen(m)}</td><td>${m.status}</td></tr>`));
   });
   return out;
 }
@@ -680,7 +682,7 @@ function moduleIdentities(mods){
   return html`<div class="panel"><h2>Module identities <span class="count">${mods.length} admitted</span></h2>
     <table><thead><tr><th>Module</th><th>Identities</th><th>Last seen</th></tr></thead>
     <tbody>${names.map(n=>{const ids=mods.filter(p=>p.module===n);
-      return html`<tr><td>${modLink(ids[0])}</td><td class="mono">${ids.map(p=>html`<div>${p.device}</div>`)}</td><td>${ids.map(p=>html`<div>${p.seen}</div>`)}</td></tr>`;})}</tbody></table></div>
+      return html`<tr><td>${modLink(ids[0])}</td><td class="mono">${ids.map(p=>html`<div>${p.device}</div>`)}</td><td>${ids.map(p=>html`<div>${fmtSeen(p)}</div>`)}</td></tr>`;})}</tbody></table></div>
     <div class="note">Each installed module has its own admitted key. They are not devices and are not duplicates: do not purge them.</div>`;
 }
 function hiveShell(all,probing){
@@ -962,7 +964,7 @@ async function moduleIdentitiesOf(name){
   if(!mine.length) return;
   const host=p=>{ const d=pr.find(x=>x.device===p.host&&!isModuleRow(x)); return d?d.name:(p.host||'not reported'); };
   put(el,html`<h3>Identities</h3><div class="note">Each installed module writes with an admitted key of its own. It is not a device and not a duplicate: do not purge it.</div>
-    <table><thead><tr><th>Key</th><th>Device</th><th>Last seen</th><th>Status</th></tr></thead><tbody>${mine.map(p=>html`<tr><td class="mono">${p.device}</td><td>${host(p)}</td><td>${p.seen}</td><td>${p.status}</td></tr>`)}</tbody></table>`);
+    <table><thead><tr><th>Key</th><th>Device</th><th>Last seen</th><th>Status</th></tr></thead><tbody>${mine.map(p=>html`<tr><td class="mono">${p.device}</td><td>${host(p)}</td><td>${fmtSeen(p)}</td><td>${p.status}</td></tr>`)}</tbody></table>`);
 }
 
 /* ---------- Settings forms: rendered from `hconfig list` records; saved by POST /api/settings (hconfig set) ---------- */

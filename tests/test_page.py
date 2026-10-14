@@ -106,3 +106,18 @@ def test_d5_module_identities_nest_under_their_host_device():
     tel = JS[JS.index("async function telemetry()"):JS.index("Per-node drill-down")]
     assert "/api/peers?probe=0" in tel and "isModuleRow(p)" in tel and "Devices</h2>" in tel and "Module identities" in tel
 
+
+
+def test_peers_show_seen_at_with_fallback_to_seen():
+    """hive-mind-dash#18 gap 3: every last-seen cell goes through fmtSeen (core's `seen_at`, else the date `seen`)."""
+    import os, shutil, subprocess, pytest
+    app = (D / "app.js").read_text()
+    assert "${p.seen}" not in app and "${m.seen}" not in app and app.count("fmtSeen(") >= 5
+    root = Path(__file__).resolve().parent
+    node = shutil.which("node") or next((str(c) for c in sorted((Path.home() / ".nvm" / "versions" / "node").glob("v*/bin/node"), reverse=True) if c.is_file()), None)
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is required in CI")
+        pytest.skip("node is not installed")
+    r = subprocess.run([node, str(root / "seen_at.js"), str(D / "app.js")], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.startswith("ok"), r.stderr + r.stdout
