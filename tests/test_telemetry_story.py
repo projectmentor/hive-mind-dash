@@ -36,3 +36,14 @@ def test_the_node_tab_keeps_its_cards():
 
 def test_data_stays_text():
     assert not re.search(r"innerHTML|insertAdjacentHTML", STORY)
+
+
+def test_story_window_fits_the_daemon_by_day_cap():
+    # core _tel_aggregate returns by_day[-21:]; a longer window draws older days as zero and undercounts
+    assert "const TEL_DAYS=21;" in JS
+    assert "ovDays(TEL_DAYS)" in JS
+
+
+def test_hiding_raw_clears_the_filters():
+    # the chips only render inside Raw, so a filter must not outlive it
+    assert "if(!on){TF.fnode=TF.fproject=TF.fagent=TF.fday=TF.fmodel=''" in JS

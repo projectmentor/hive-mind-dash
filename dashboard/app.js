@@ -714,7 +714,7 @@ function telemetryBody(t,page,pagerFn,showNode,drill,noCards){
 /* The Telemetry storyline (hdash_overview_v2 §5): a question, a headline, three charts from the one hive-wide read the page already
    makes (no per-device reads), then Raw: today's filters and tables, off by default. */
 let TRAW=false;
-const TEL_DAYS=90;
+const TEL_DAYS=21; // core _tel_aggregate caps by_day at the 21 most recent active days; a longer window would draw older days as zero
 function telStory(t,devs){
   const T=t.totals||{}, by={}; (t.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
   const days=ovDays(TEL_DAYS), vals=days.map(k=>by[k]||0), inWin=vals.reduce((a,b)=>a+b,0);
@@ -739,7 +739,7 @@ function telStory(t,devs){
   return out;
 }
 const TSEEN={};
-const telRaw=on=>{ TRAW=on; telemetry(); };
+const telRaw=on=>{ TRAW=on; if(!on){TF.fnode=TF.fproject=TF.fagent=TF.fday=TF.fmodel='';TP=1;} telemetry(); };
 
 /* ---------- Telemetry tab (combined across the hive, sort+filter) ---------- */
 let TP=1, TF={sort:'recent',fnode:'',fproject:'',fagent:'',fday:'',fmodel:''};
