@@ -1,0 +1,1 @@
+- hdash 0.2 D8: Settings › Node has two tabs. Fleet shows the settings the owner signs and every device shares; This device shows the settings that apply to this device only. Keys are grouped by prefix (`node:`, `core:`, `x-hwatch:` …), an unset key reads `default (N)`, and a template key is one row that says to add a key with `hconfig set`.
