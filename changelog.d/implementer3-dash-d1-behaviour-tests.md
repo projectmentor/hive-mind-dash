@@ -1,0 +1,1 @@
+- hdash tests: behaviour tests for the request queue, `getJSON` and `failText` under node, a check that every `.t(` argument is a string literal, and a check that every motion duration is 200 ms (hive-mind-dash#25).
