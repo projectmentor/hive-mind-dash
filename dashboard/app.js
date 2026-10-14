@@ -654,6 +654,8 @@ function groupPeers(all){
 }
 const openModule=name=>{MP={name,tab:'overview'};state.view='modulePage';state.node=null;state.detail=null;setNav('modules');render();};
 const modLink=m=>html`<button class="linkbtn" type="button" onclick=${()=>openModule(m.module)} title=${"Open Modules › "+m.module}>${m.module}</button>`;
+/* One compact line per module (name, then what this page is about); the full card is on Modules. Trust and Governance use it. */
+const moduleLines=(mods,facts)=>mods.length?mods.map(m=>html`<div class="mrow"><button class="linkbtn mname" type="button" onclick=${()=>openModule(m.name)} title=${'Open Modules › '+m.name}><strong>${m.name}</strong></button>${facts(m)}</div>`):empty('No modules installed.');
 let HOPEN={};   // device ids whose module identities are expanded (Hive and Telemetry share it)
 const toggleHost=(id,again)=>{ HOPEN[id]=!HOPEN[id]; again(); };
 const hostBtn=(d,n,again)=>n?html`<button class="twist" type="button" aria-expanded=${HOPEN[d.device]?'true':'false'} title=${n+' module identit'+(n===1?'y':'ies')+' on this device'} onclick=${e=>{e.stopPropagation();toggleHost(d.device,again);}}>${HOPEN[d.device]?'▾':'▸'}</button>`:html`<span class="twist"></span>`;
@@ -943,12 +945,23 @@ async function modulePage(){
   if(!tabs.some(t=>t[0]===MP.tab)) MP.tab='overview';
   const kv=(k,v)=>html`<tr><td class="c-dim">${k}</td><td>${v}</td></tr>`;
   const body={
-    overview:()=>html`${ui&&ui.summary?html`<p>${ui.summary}</p>`:null}<table><tbody>${kv('Version',m.version)}${kv('Publisher',html`<span class="mono">${m.publisher}</span>`)}${kv('Signature',m.signature)}${kv('Service',m.service)}${kv('Device',m.device)}${kv('Trust',m.trust)}${kv('Quota use',m.quota_use)}${m.cli?kv('Command',html`<span class="mono">${m.cli}</span>`):null}</tbody></table>${m.problem?html`<div class="note c-warn">${m.problem}</div>`:null}${ui?null:html`<div class="note">This module declares no page of its own${m.signature==='valid'?'':' (its signature is not valid here, so its manifest is not read)'}.</div>`}`,
+    overview:()=>html`${ui&&ui.summary?html`<p>${ui.summary}</p>`:null}<table><tbody>${kv('Version',m.version)}${kv('Publisher',html`<span class="mono">${m.publisher}</span>`)}${kv('Signature',m.signature)}${kv('Service',m.service)}${kv('Device',m.device)}${kv('Trust',m.trust)}${kv('Quota use',m.quota_use)}${m.cli?kv('Command',html`<span class="mono">${m.cli}</span>`):null}</tbody></table>${m.problem?html`<div class="note c-warn">${m.problem}</div>`:null}<div id="mpids"></div>${ui?null:html`<div class="note">This module declares no page of its own${m.signature==='valid'?'':' (its signature is not valid here, so its manifest is not read)'}.</div>`}`,
     health:()=>healthBody(m.doctor),
-    config:()=>settingsPanel('x-'+MP.name+':'),
+    config:()=>settingsPanel('x-'+MP.name+':'),   // its own tab state, apart from Settings › Node
     actions:()=>html`<div class="note">Run these on this node's terminal. The dashboard runs nothing; an owner action is also signed there, never here.</div>${acts.map(a=>html`<div class="panel"><h2>${a.label||a.id}${a.owner?html` <span class="chip">owner</span>`:null}</h2>${a.confirm?html`<p class="c-dim">${a.confirm}</p>`:null}${cmdBlock(a.command)}</div>`)}`,
   };
   put($('#mpbody'),html`<div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===MP.tab?' active':'')} onclick=${()=>{MP.tab=t[0];modulePage();}}>${t[1]}</button>`)}</div><div class="panel">${body[MP.tab]()}</div>`);
+  if(MP.tab==='overview') moduleIdentitiesOf(MP.name);
+}
+/* The module's own admitted keys and the device that hosts them (`module` and `host` on /api/peers; an older core sends neither). */
+async function moduleIdentitiesOf(name){
+  let pr; try{ pr=(await getJSON('/api/peers?probe=0')).peers; }catch(e){ return; }
+  const el=$('#mpids'); if(!el||MP.name!==name) return;
+  const mine=pr.filter(p=>p.module===name);
+  if(!mine.length) return;
+  const host=p=>{ const d=pr.find(x=>x.device===p.host&&!isModuleRow(x)); return d?d.name:(p.host||'not reported'); };
+  put(el,html`<h3>Identities</h3><div class="note">Each installed module writes with an admitted key of its own. It is not a device and not a duplicate: do not purge it.</div>
+    <table><thead><tr><th>Key</th><th>Device</th><th>Last seen</th><th>Status</th></tr></thead><tbody>${mine.map(p=>html`<tr><td class="mono">${p.device}</td><td>${host(p)}</td><td>${p.seen}</td><td>${p.status}</td></tr>`)}</tbody></table>`);
 }
 
 /* ---------- Settings forms: rendered from `hconfig list` records; saved by POST /api/settings (hconfig set) ---------- */
@@ -1042,19 +1055,20 @@ const settingsGroups=keys=>{
   keys.forEach(k=>{ const p=prefixOf(k.id); if(!by.has(p)) by.set(p,[]); by.get(p).push(k); });
   return [...by.entries()].sort((x,y)=>x[0]<y[0]?-1:1).map(([p,ks])=>html`<h3 class="mono">${p}</h3>${settingsTable(ks)}`);
 };
-let SETTINGS_TAB='device';
+const SETTINGS_TABS={};   // the active tab per page: Settings › Node and each module's Config keep their own
 function settingsPanel(prefix,cls){
+  const tabKey=prefix||'node';
   const box=html`<div>${spin()}</div>`.firstElementChild;
   getJSON('/api/settings?'+new URLSearchParams(Object.assign({},prefix?{prefix}:{},cls?{class:cls}:{}))).then(r=>{
     const fleet=r.keys.filter(k=>k.class==='governed'), dev=r.keys.filter(k=>k.class!=='governed');
     const show=()=>{
       const tabs=[['fleet','Fleet',fleet],['device','This device',dev]];
-      const body=SETTINGS_TAB==='fleet'
+      const cur=SETTINGS_TABS[tabKey]||'device', body=cur==='fleet'
         ?html`<div class="note">Settings signed by the owner and shared by every device in the hive.${fleet.length?'':' An unlocked owner key is needed to change them.'}</div>${fleet.length?settingsGroups(fleet):empty('No fleet settings.')}`
         :html`<div class="note">Settings that apply to this device only.</div>${dev.length?settingsGroups(dev):empty('No device settings.')}`;
       put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
         ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}
-        <div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===SETTINGS_TAB?' active':'')} onclick=${()=>{SETTINGS_TAB=t[0];show();}}>${t[1]} <span class="c-dim">${t[2].length}</span></button>`)}</div>${body}`);
+        <div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===cur?' active':'')} onclick=${()=>{SETTINGS_TABS[tabKey]=t[0];show();}}>${t[1]} <span class="c-dim">${t[2].length}</span></button>`)}</div>${body}`);
     };
     show();
   }).catch(()=>put(box,empty('settings unavailable — is hconfig installed on this node? (hive-mind module add hconfig)')));
@@ -1094,11 +1108,11 @@ async function workspace(name){
   const parts=[html`<div class="note">${w.question} Read-only: nothing on this page changes the hive.</div>`];
   if(name==='trust'){
     parts.push(html`<div class="panel"><h2>Claims and where to verify them</h2><table><thead><tr><th>Claim</th><th>Verify at</th></tr></thead><tbody>${w.claims.map(c=>html`<tr><td>${c.claim}</td><td>${cmdBlock(c.verify)}</td></tr>`)}</tbody></table></div>`);
-    parts.push(html`<div class="panel"><h2>Modules: signature, publisher and health</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Version</th><th>Publisher</th><th>Signature</th><th>Trust</th><th>Health</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td>${m.version}</td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td>${m.trust}</td><td>${healthPill(m.doctor)}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
+    parts.push(html`<div class="panel"><h2>Modules: signature and trust</h2>${moduleLines(w.modules,m=>html`<span class=${m.signature==='valid'?'c-ok':'c-warn'}>signature ${m.signature}</span><span class="c-dim fs12">trust ${m.trust}</span>`)}<div class="note">Publisher, health and settings of each module are on its page under Modules.</div></div>`);
   }
   if(name==='governance'){
     parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}${helpIcon(k.id,k.help)}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
-    parts.push(html`<div class="panel"><h2>Who may write: admission, trust and signature per module</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Publisher</th><th>Signature</th><th>Device</th><th>Trust</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td class=${m.device==='admitted'?'c-ok':'c-warn'}>${m.device}</td><td>${m.trust}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
+    parts.push(html`<div class="panel"><h2>Who may write: admission, trust and signature per module</h2>${moduleLines(w.modules,m=>html`<span class=${m.device==='admitted'?'c-ok':'c-warn'}>device ${m.device}</span><span class="c-dim fs12">trust ${m.trust}</span>${m.signature==='valid'?null:html`<span class="c-warn fs12">signature ${m.signature}</span>`}`)}</div>`);
   }
   const story=name==='agents'||name==='spend';
   if(story){ WSD={name,w,raw:null}; parts.push(html`<div id="wsstory">${VIZ.skeleton('bars')}</div>`); }
@@ -1180,7 +1194,7 @@ async function spendStory(){
       <div class="note">${WS_CAP_NOTE}</div>
       <div class="note">Cost per day is not reported by the HiveMind service yet, so there is no daily cost chart.</div></div>`,
     html`<div class="panel"><h2>Write limits per module</h2>
-      ${q.length?html`${q.map(m=>{ const u=quotaUse(m.use); return html`<div class="lmod"><div class="fname">${m.module}</div>${u?html`${lim('per hour',u.per_hour,m.per_hour,'l'+m.module+'h')}${lim('per day',u.per_day,m.per_day,'l'+m.module+'d')}${lim('lifetime',u.lifetime,m.lifetime,'l'+m.module+'t')}`:html`<div class="c-dim fs12">use not reported: ${cell(m.use)}</div>`}</div>`; })}
+      ${q.length?html`${q.map(m=>{ const u=quotaUse(m.use); return html`<div class="lmod"><div class="fname"><button class="linkbtn" type="button" onclick=${()=>openModule(m.module)} title=${'Open Modules › '+m.module}>${m.module}</button></div>${u?html`${lim('per hour',u.per_hour,m.per_hour,'l'+m.module+'h')}${lim('per day',u.per_day,m.per_day,'l'+m.module+'d')}${lim('lifetime',u.lifetime,m.lifetime,'l'+m.module+'t')}`:html`<div class="c-dim fs12">use not reported: ${cell(m.use)}</div>`}</div>`; })}
         <div class="note">A module's write limit caps how much it can add to the hive, so a stuck module cannot fill it. The bars show use on this device only; the bar turns amber at 70% and red at 90%.</div>`:empty('No modules installed.')}</div>`];
   ['cost'].forEach(k=>{ WSEEN[k]=1; }); q.forEach(m=>['h','d','t'].forEach(x=>{ WSEEN['l'+m.module+x]=1; }));
   WSD.raw=()=>[html`<div class="panel"><h2>Module quotas</h2>${q.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${q.map(m=>html`<tr><td><strong>${m.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(m,k)}</td>`)}<td class="mono">${cell(m.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`,modelRawTable(t)];
