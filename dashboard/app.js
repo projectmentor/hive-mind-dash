@@ -1056,21 +1056,32 @@ const settingsGroups=keys=>{
   return [...by.entries()].sort((x,y)=>x[0]<y[0]?-1:1).map(([p,ks])=>html`<h3 class="mono">${p}</h3>${settingsTable(ks)}`);
 };
 const SETTINGS_TABS={};   // the active tab per page: Settings › Node and each module's Config keep their own
+/* Fleet = governed keys; This device = every other class. */
+const settingsSplit=keys=>({fleet:keys.filter(k=>k.class==='governed'), dev:keys.filter(k=>k.class!=='governed')});
+const fleetNote=n=>'Settings signed by the owner and shared by every device in the hive.'+(n?' An unlocked owner key is needed to change them.':'');
+/* Both panes are built once; a tab click only hides one and shows the other, so input typed in a row survives the switch. */
+function settingsTabSwitch(tab,btns,panes){
+  for(const k in btns){ btns[k].classList.toggle('active',k===tab); panes[k].hidden=k!==tab; }
+}
 function settingsPanel(prefix,cls){
   const tabKey=prefix||'node';
   const box=html`<div>${spin()}</div>`.firstElementChild;
   getJSON('/api/settings?'+new URLSearchParams(Object.assign({},prefix?{prefix}:{},cls?{class:cls}:{}))).then(r=>{
-    const fleet=r.keys.filter(k=>k.class==='governed'), dev=r.keys.filter(k=>k.class!=='governed');
-    const show=()=>{
-      const tabs=[['fleet','Fleet',fleet],['device','This device',dev]];
-      const cur=SETTINGS_TABS[tabKey]||'device', body=cur==='fleet'
-        ?html`<div class="note">Settings signed by the owner and shared by every device in the hive.${fleet.length?'':' An unlocked owner key is needed to change them.'}</div>${fleet.length?settingsGroups(fleet):empty('No fleet settings.')}`
-        :html`<div class="note">Settings that apply to this device only.</div>${dev.length?settingsGroups(dev):empty('No device settings.')}`;
-      put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
-        ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}
-        <div class="tabs">${tabs.map(t=>html`<button class=${'tab'+(t[0]===cur?' active':'')} onclick=${()=>{SETTINGS_TABS[tabKey]=t[0];show();}}>${t[1]} <span class="c-dim">${t[2].length}</span></button>`)}</div>${body}`);
+    const {fleet,dev}=settingsSplit(r.keys);
+    const btns={}, panes={};
+    const tabs=[['fleet','Fleet',fleet],['device','This device',dev]];
+    const pane={
+      fleet:html`<div><div class="note">${fleetNote(fleet.length)}</div>${fleet.length?settingsGroups(fleet):empty('No fleet settings.')}</div>`.firstElementChild,
+      device:html`<div><div class="note">Settings that apply to this device only.</div>${dev.length?settingsGroups(dev):empty('No device settings.')}</div>`.firstElementChild,
     };
-    show();
+    const bar=html`<div class="tabs">${tabs.map(t=>{
+      const b=html`<button class="tab">${t[1]} <span class="c-dim">${t[2].length}</span></button>`.firstElementChild;
+      b.addEventListener('click',()=>{ SETTINGS_TABS[tabKey]=t[0]; settingsTabSwitch(t[0],btns,panes); });
+      btns[t[0]]=b; panes[t[0]]=pane[t[0]]; return b;
+    })}</div>`;
+    settingsTabSwitch(SETTINGS_TABS[tabKey]||'device',btns,panes);
+    put(box,html`<div class="note">Rendered from <span class="mono">hconfig list</span>; a save runs <span class="mono">hconfig set</span> on this node. This page never signs and never sees the owner passphrase.</div>
+      ${(r.warnings||[]).map(w=>html`<div class="note c-accent">${w}</div>`)}`,bar,pane.fleet,pane.device);
   }).catch(()=>put(box,empty('settings unavailable — is hconfig installed on this node? (hive-mind module add hconfig)')));
   return box;
 }
