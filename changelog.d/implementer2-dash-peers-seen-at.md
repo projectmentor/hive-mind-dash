@@ -1,0 +1,1 @@
+- hdash 0.2: the Devices, Modules and node views show a device's last seen to the minute from core's `seen_at` (hive-mind#498); with an older core, which sends only the date `seen`, they show the date as before.
