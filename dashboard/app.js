@@ -1198,6 +1198,11 @@ async function spendStory(){
   if(WSD.name!=='spend') return;
   const T=t.totals||{}, models=Object.entries(t.by_model||{}), priced=models.filter(([,v])=>v.priced).sort((a,b)=>b[1].cost-a[1].cost).slice(0,8), unp=models.filter(([,v])=>!v.priced).map(([m])=>m);
   const q=WSD.w.quotas||[];
+  // core 3.x puts tokens and cost on each by_day entry (cost is null for a day with no priced model); an older daemon sends neither
+  const dayMap={}; (t.by_day||[]).forEach(d=>{ dayMap[d.day]=d; });
+  const perDay=(t.by_day||[]).some(d=>'tokens' in d&&'cost' in d);
+  const dayRows=ovDays(WS_DAYS).map(k=>{ const d=dayMap[k]||{}; return {k,tokens:d.tokens||0,cost:d.cost==null?null:d.cost,seen:!!d.sessions}; });
+  const dayPriced=dayRows.some(r=>r.cost!=null), dayCost=dayRows.reduce((a,r)=>a+(r.cost||0),0), dayTok=dayRows.reduce((a,r)=>a+r.tokens,0), dayUnp=dayRows.filter(r=>r.seen&&r.cost==null).length;
   const legend=rows=>html`<div class="legend">${rows.map(([label,n,i])=>html`<span><i class=${'s'+(i%6+1)}></i>${label} ${fmtCost(n)}</span>`)}</div>`;
   const lim=(label,used,cap,k)=>html`<div class="lrow"><span class="lname">${label}</span>${cap?html`<span class="lbar">${VIZ.limits(used,cap,{label:label+': '+fmtNum(used)+' of '+fmtNum(cap)+' used',animate:!WSEEN[k]})}</span><span class="c-dim fs12 lnum">${fmtNum(used)} of ${fmtNum(cap)}</span>`:html`<span class="c-dim fs12">no writes allowed</span>`}</div>`;
   const out=[html`<div class="panel"><div class="note">What is this costing, and what stops it running away?</div>
@@ -1206,11 +1211,18 @@ async function spendStory(){
       ${priced.length?html`${VIZ.bars(priced.map(([m,v])=>({label:m,value:v.cost})),Object.assign({label:'Cost by model: '+priced.map(([m,v])=>m+' '+fmtCost(v.cost)).join(', ')},wsAnim('cost')))}${legend(priced.map(([m,v],i)=>[m,v.cost,i]))}`:empty('no session with a known price yet')}
       ${unp.length?html`<div class="note">Price unknown, so not in the chart or the total: <span class="mono">${unp.join(', ')}</span>.</div>`:null}
       <div class="note">${WS_CAP_NOTE}</div>
-      <div class="note">Cost per day is not reported by the HiveMind service yet, so there is no daily cost chart.</div></div>`,
+      ${perDay?null:html`<div class="note">Cost per day is not reported by the HiveMind service yet, so there is no daily cost chart.</div>`}</div>`,
+    perDay?html`<div class="panel"><h2>Cost per day, last ${WS_DAYS} days</h2>
+      ${dayPriced?VIZ.bars(dayRows.map(r=>({label:r.k,value:r.cost||0})),Object.assign({label:'Cost per day, last '+WS_DAYS+' days: '+fmtCost(dayCost)+' in total'},wsAnim('costday'))):empty('no session with a known price in the last '+WS_DAYS+' days')}
+      <div class="sparkx ends"><div>${dayRows[0].k.slice(5)}</div><div>${dayRows[dayRows.length-1].k.slice(5)}</div></div>
+      ${dayUnp?html`<div class="note">${dayUnp} day${dayUnp===1?'':'s'} with sessions had no known price and show no bar.</div>`:null}</div>
+      <div class="panel"><h2>Tokens per day, last ${WS_DAYS} days</h2>
+      ${dayTok?VIZ.bars(dayRows.map(r=>({label:r.k,value:r.tokens})),Object.assign({label:'Tokens per day, last '+WS_DAYS+' days: '+fmtNum(dayTok)+' in total'},wsAnim('tokday'))):empty('no tokens recorded in the last '+WS_DAYS+' days')}
+      <div class="sparkx ends"><div>${dayRows[0].k.slice(5)}</div><div>${dayRows[dayRows.length-1].k.slice(5)}</div></div></div>`:null,
     html`<div class="panel"><h2>Write limits per module</h2>
       ${q.length?html`${q.map(m=>{ const u=quotaUse(m.use); return html`<div class="lmod"><div class="fname"><button class="linkbtn" type="button" onclick=${()=>openModule(m.module)} title=${'Open Modules › '+m.module}>${m.module}</button></div>${u?html`${lim('per hour',u.per_hour,m.per_hour,'l'+m.module+'h')}${lim('per day',u.per_day,m.per_day,'l'+m.module+'d')}${lim('lifetime',u.lifetime,m.lifetime,'l'+m.module+'t')}`:html`<div class="c-dim fs12">use not reported: ${cell(m.use)}</div>`}</div>`; })}
         <div class="note">A module's write limit caps how much it can add to the hive, so a stuck module cannot fill it. The bars show use on this device only; the bar turns amber at 70% and red at 90%.</div>`:empty('No modules installed.')}</div>`];
-  ['cost'].forEach(k=>{ WSEEN[k]=1; }); q.forEach(m=>['h','d','t'].forEach(x=>{ WSEEN['l'+m.module+x]=1; }));
+  ['cost','costday','tokday'].forEach(k=>{ WSEEN[k]=1; }); q.forEach(m=>['h','d','t'].forEach(x=>{ WSEEN['l'+m.module+x]=1; }));
   WSD.raw=()=>[html`<div class="panel"><h2>Module quotas</h2>${q.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${q.map(m=>html`<tr><td><strong>${m.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(m,k)}</td>`)}<td class="mono">${cell(m.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`,modelRawTable(t)];
   wsStory('spend',...out); wsRaw();
 }

@@ -29,7 +29,8 @@ def test_windows_never_exceed_the_daemon_cap_and_fan_out_is_capped():
 def test_unknown_price_is_listed_not_zero_and_the_page_never_maps_model_ids():
     assert "Price unknown, so not in the chart or the total" in SPEND and "v.priced" in SPEND
     assert not re.search(r"claude-(opus|sonnet|haiku|fable|mythos)|opus", STORY.lower())
-    assert "Cost per day is not reported" in SPEND and "by_day" not in SPEND   # no invented daily cost
+    assert "Cost per day is not reported" in SPEND   # shown only against a daemon that sends no per-day cost
+    assert "'tokens' in d&&'cost' in d" in SPEND and "d.cost==null?null" in SPEND   # a null day is never turned into a price
 
 
 def test_a_zero_write_limit_is_not_drawn_as_a_bar():

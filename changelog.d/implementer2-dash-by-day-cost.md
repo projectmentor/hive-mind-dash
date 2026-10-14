@@ -1,0 +1,1 @@
+- The Spend page now charts cost per day and tokens per day over the last 21 days from the `by_day` tokens and cost the HiveMind service reports; a day with no known price shows no bar, and against an older service the page keeps its note that cost per day is not reported. (Part of #18.)
