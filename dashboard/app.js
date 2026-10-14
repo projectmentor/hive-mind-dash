@@ -278,7 +278,7 @@ function renderDetail(){
    viewer page every 120 s; a refresh redraws in place with no animation. A viewer's page leaves out what the viewer listener refuses. */
 const navCard=(lbl,val,go,statCls,id)=>html`<div class="card link" id=${id} onclick=${go}><div class="lbl">${lbl}</div><div class=${statCls||'stat'}>${val}</div></div>`;
 const OV_EVERY=(VIEWER?120:60)*1000, OV_SPARK_DAYS=14, OV_SPARK_CAP=8;
-let OVT=null, OVD={}, OVERR={}, OVSEEN={}, OVAT=0;
+let OVT=null, OVD={}, OVERR={}, OVSEEN={}, OVAT=0, OVTRY=0, OVFAIL=false;   // OVAT: when a read last succeeded; OVTRY: when a refresh last started; OVFAIL: the last refresh got no read at all
 const ovLive=()=>state.view==='overview'&&!state.node&&!state.detail&&!!document.getElementById('ovroot');
 const ovAnim=k=>{ const a=!OVSEEN[k]; OVSEEN[k]=1; return {animate:a}; };
 const widget=(cls,id,title,go,kind,more)=>html`<section class=${'panel widget '+cls}><h2>${title}${go?html`<button class="wlink" type="button" onclick=${go}>${more||'Details'} ›</button>`:null}</h2><div class="wbody" id=${id}>${VIZ.skeleton(kind)}</div></section>`;
@@ -299,6 +299,11 @@ function ovDevices(){
 }
 const ovDot=d=>d.self?'self':d.state==='online'||d.state==='in sync'?'ok':d.state==='diverged'?'stale':'off';
 
+const ovAgeDraw=()=>{
+  const ago=OVAT?Math.max(0,Math.round((Date.now()-OVAT)/1000))+'s ago':null;
+  put(document.getElementById('ovAge'),OVFAIL?html`<span class="c-bad">${ago?'refresh failed. Showing data from '+ago:'could not load this page'}</span>`:ago?'updated '+ago:null);
+};
+
 function ovHero(){
   const m=OVD.meta; if(!m) return;
   setNum('ovFacts',m.facts); setNum('ovDecs',m.decisions); setNum('ovContested',m.contested);
@@ -310,7 +315,7 @@ function ovHero(){
   put(document.getElementById('ovMerkle'),m.merkle);
   const v=OVD.verify, s=document.getElementById('ovShield');
   if(s&&v) put(s,shieldIcon(v.ok),html`<span>${v.ok?'v'+(v.version||m.contract)+' genuine':'changed locally'}</span>`);
-  put(document.getElementById('ovAge'),OVAT?'updated '+Math.max(0,Math.round((Date.now()-OVAT)/1000))+'s ago':null);
+  ovAgeDraw();
 }
 
 function ovFleet(){
@@ -370,7 +375,10 @@ const OV_ACT_DAYS=21;
 const ovDays=n=>[...Array(n)].map((_,i)=>new Date(Date.now()-(n-1-i)*864e5).toISOString().slice(0,10));
 function ovSparks(){
   const t=OVD.tel; if(!t||VIEWER) return;
-  (t.nodes||[]).filter(n=>n.reachable).slice(0,OV_SPARK_CAP).forEach(n=>
+  /* The daemon filters fnode by device NAME. Two devices that share a name would both get the merged series, so they get no read (and no sparkline) until the daemon filters by node id. */
+  const reach=(t.nodes||[]).filter(n=>n.reachable), count={}; reach.forEach(n=>{ count[n.node]=(count[n.node]||0)+1; });
+  OVD.sameName=reach.filter(n=>count[n.node]>1).length;
+  reach.filter(n=>count[n.node]===1).slice(0,OV_SPARK_CAP).forEach(n=>
     getJSON('/api/telemetry?scope=hive&fnode='+encodeURIComponent(n.node)+'&limit=1').then(r=>{
       const by={}; (r.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
       (OVD.perDay=OVD.perDay||{})[n.node_id]={name:n.node,by};
@@ -438,14 +446,17 @@ function ovActivity(){
   if(!devs.length) return;
   const days=ovDays(OV_ACT_DAYS), tot=devs.reduce((a,d)=>a+days.reduce((x,k)=>x+(d.by[k]||0),0),0);
   if(!tot){ put(b,empty('no sessions recorded on any device.')); return; }
+  const dup=OVD.sameName?html`<div class="wnote">${OVD.sameName} devices share a name and are left out. Rename one of them.</div>`:null;
   put(b,html`<div class="wsum"><span class="big2">${fmtNum(tot)}</span> sessions in the last ${OV_ACT_DAYS} days, across ${devs.length} device${devs.length===1?'':'s'}</div>
     ${VIZ.bars(days.map(k=>({label:k,parts:devs.map(d=>d.by[k]||0)})),Object.assign({stacked:true,label:'Sessions per day by device, last '+OV_ACT_DAYS+' days: '+devs.map(d=>d.name).join(', ')},ovAnim('activity')))}
-    <div class="legend">${devs.map((d,i)=>html`<span><i class=${'s'+(i%6+1)}></i>${d.name}</span>`)}</div>`);
+    <div class="legend">${devs.map((d,i)=>html`<span><i class=${'s'+(i%6+1)}></i>${d.name}</span>`)}</div>${dup}`);
 }
 
 function ovFetch(){
-  OVAT=Date.now();
-  const ld=(key,url,post,draw)=>getJSON(url).then(r=>{ OVD[key]=post?post(r):r; OVERR[key]=null; draw(); }).catch(e=>{ OVERR[key]=e; if(OVD[key]==null) draw(); });
+  OVTRY=Date.now();
+  let left=0, ok=0;
+  const settled=()=>{ if(--left===0&&!ok){ OVFAIL=true; ovAgeDraw(); } };
+  const ld=(key,url,post,draw)=>{ left++; getJSON(url).then(r=>{ ok++; OVAT=Date.now(); OVFAIL=false; OVD[key]=post?post(r):r; OVERR[key]=null; draw(); }).catch(e=>{ OVERR[key]=e; if(OVD[key]==null) draw(); }).then(settled); };
   ld('meta','/api/overview',r=>{ META=r; put($('#hMerkle'),r.merkle); return r; },()=>{ ovHero(); ovMix(); });
   ld('ideas','/api/search?kind=idea&limit=1',r=>r.ideas_total==null?(r.ideas||[]).length:r.ideas_total,()=>{ ovHero(); ovMix(); });
   ld('verify','/api/verify',null,ovHero);
@@ -464,12 +475,12 @@ function ovFetch(){
 function ovTick(){
   if(!ovLive()){ clearInterval(OVT); OVT=null; return; }
   if(document.hidden) return;
-  if(Date.now()-OVAT>=OV_EVERY) ovFetch(); else ovHero();
+  if(Date.now()-OVTRY>=OV_EVERY) ovFetch(); else ovHero();
 }
 document.addEventListener('visibilitychange',()=>{ if(!document.hidden&&OVT) ovTick(); });
 
 async function overview(){
-  OVD={meta:META}; OVERR={}; OVSEEN={}; OVAT=0;
+  OVD={meta:META}; OVERR={}; OVSEEN={}; OVAT=0; OVTRY=0; OVFAIL=false;
   clearInterval(OVT);
   put($('#app'),html`<div class="wgrid" id="ovroot">
     <section class="hero w12">
