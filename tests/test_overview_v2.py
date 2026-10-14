@@ -69,13 +69,13 @@ def test_d3_widgets_exist_and_the_operator_only_ones_are_left_out_for_a_viewer()
 
 
 def test_d3_adds_no_per_device_read_and_no_new_route():
-    # the 21-day Activity chart and the 14-day sparklines draw from the same one-per-device read
-    assert OV.count("fnode=") == 1 and OV.count("OV_SPARK_CAP") == 3
+    # the 21-day Activity chart and the 14-day sparklines draw from the hive read's per-node by_day; fnode is only the older-core fallback
+    assert OV.count("fnode=") == 1 and "Array.isArray(n.by_day)" in OV and OV.count("OV_SPARK_CAP") == 3
     assert "(OVD.perDay=OVD.perDay||{})[n.node_id]" in OV and "ovFleet(); ovActivity();" in OV
     routes = set(re.findall(r"'(/api/[a-z/]+)", OV))
     assert routes == {"/api/overview", "/api/search", "/api/verify", "/api/peers", "/api/audit", "/api/telemetry", "/api/modules"}
     assert "/api/series" not in OV and "/v1/series" not in OV
-    assert OV.count("/api/telemetry?scope=hive") == 2                              # the one hive read and the per-device read
+    assert OV.count("/api/telemetry?scope=hive") == 2                              # the one hive read and the older-core fallback read
 
 
 def test_d3_one_hive_read_feeds_seat_activity_and_spend():

@@ -1,0 +1,1 @@
+- The Overview sparklines and Activity chart now read each device's per-day sessions from the one hive telemetry read (`by_day` on each node), so an open Overview no longer makes one extra read per device; against an older daemon without the field it falls back to the per-device reads. (Closes #27.)

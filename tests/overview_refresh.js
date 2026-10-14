@@ -6,7 +6,7 @@ const fs = require('fs'), vm = require('vm'), assert = require('assert');
 const src = fs.readFileSync(process.argv[2], 'utf8');
 const cut = (a, b) => { const i = src.indexOf(a), j = src.indexOf(b, i); assert(i > 0 && j > i, a + ' not found'); return src.slice(i, j); };
 const code = cut('const OV_EVERY=', '\n') + '\n' + cut('let OVT=null', '\n') + '\n' + cut('const ovLive=', '\n') + '\n' + cut('const ovAgeDraw=', 'function ovHero(') +
-  cut('const OV_ACT_DAYS', '\nconst ovDays') + '\n' + cut('const ovDays=', '\n') + '\n' + cut('function ovSparks(', '/* Corpus growth') + cut('function ovFetch(', "document.addEventListener('visibilitychange'");
+  cut('const OV_ACT_DAYS', '\nconst ovDays') + '\n' + cut('const ovDays=', '\n') + '\n' + cut('const ovBy=', '\n') + '\n' + cut('function ovSparks(', '/* Corpus growth') + cut('function ovFetch(', "document.addEventListener('visibilitychange'");
 
 function load(opts = {}) {
   const log = { calls: [], age: [], drawn: 0 };
@@ -93,6 +93,27 @@ t('sparklines: differently named devices each get their own series', async () =>
   h.ctx.respond = u => Promise.resolve({ by_day: [{ day: 'd', sessions: u.includes('fnode=a') ? 1 : 2 }] });
   h.ovSparks(); await settle();
   assert.strictEqual(h.get("OVD").perDay.id1.by.d, 1); assert.strictEqual(h.get("OVD").perDay.id2.by.d, 2);
+});
+t('sparklines: per-node by_day in the hive read means no further read, and same-name devices keep their own series', async () => {
+  const h = load();
+  h.get("OVD").tel = { nodes: [
+    { node: 'box', node_id: 'id1', reachable: true, by_day: [{ day: 'd', sessions: 1 }] },
+    { node: 'box', node_id: 'id2', reachable: true, by_day: [{ day: 'd', sessions: 2 }] },
+    { node: 'gone', node_id: 'id4', reachable: false }] };
+  h.ovSparks(); await settle();
+  assert.deepStrictEqual(h.log.calls, []);
+  assert.strictEqual(h.get("OVD").perDay.id1.by.d, 1); assert.strictEqual(h.get("OVD").perDay.id2.by.d, 2);
+  assert.strictEqual(h.get("OVD").sameName, 0);
+});
+t('sparklines: an empty by_day is an answer (no read); only entries without the field fall back', async () => {
+  const h = load();
+  h.get("OVD").tel = { nodes: [
+    { node: 'new', node_id: 'id1', reachable: true, by_day: [] }, { node: 'old', node_id: 'id2', reachable: true }] };
+  h.ctx.respond = () => Promise.resolve({ by_day: [{ day: 'd', sessions: 7 }] });
+  h.ovSparks(); await settle();
+  assert.deepStrictEqual(h.log.calls, ['/api/telemetry?scope=hive&fnode=old&limit=1']);
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(h.get("OVD").perDay.id1.by)), {});
+  assert.strictEqual(h.get("OVD").perDay.id2.by.d, 7);
 });
 (async () => {
   for (const [n, f] of cases) { try { await f(); } catch (e) { console.error('FAIL: ' + n + '\n' + (e.stack || e)); process.exit(1); } }
