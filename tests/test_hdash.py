@@ -149,3 +149,10 @@ def test_dash_print_prints_the_url_and_opens_nothing(served, monkeypatch, capsys
     monkeypatch.setattr(hdash.subprocess, "Popen", lambda *a, **k: opened.append(a))
     assert hdash.main(["dash", "--print"]) == 0 and not opened
     assert f"http://127.0.0.1:{port}/" in capsys.readouterr().out
+
+
+def test_series_is_a_v1_read_and_a_viewer_may_pass_days_only():
+    assert "series" in hdash.V1_READS and "series" in hdash.API_ROUTES
+    assert hdash.VIEWER_ROUTES["series"] == ("days",)
+    assert hdash.viewer_query("series", "days=90") == "days=90"
+    assert hdash.viewer_query("series", "node=x") is None

@@ -98,7 +98,7 @@
   "tests/test_visual_system.py": "f41a5110a6a7428590baf66d19f0b12495c2313c0bb8baefd30f52815eb56fc0",
   "tests/test_workspaces.py": "853b578cee27b7a694269c172eaa2dddb56cc203a4952c66686da33b70fa69ce"
  },
- "min_core": "4.1",
+ "min_core": "4.2",
  "name": "hdash",
  "publisher": "IdtMxPCOYmx47k0NNrOqSCHokJvgPmRuwP9WvE9tDBc=",
  "reads": [
@@ -107,7 +107,8 @@
   "related",
   "audit",
   "peers",
-  "verify"
+  "verify",
+  "series"
  ],
  "service": {
   "command": [

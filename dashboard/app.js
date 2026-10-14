@@ -391,25 +391,18 @@ function ovSparks(){
     }).catch(()=>{}));
 }
 
-/* Corpus growth (interim, no new route): facts and decisions added per day, from the newest 200 of each. When a kind has more than
-   200 entries the window starts where the shorter list begins, so the two lines cover the same days. */
+/* Corpus growth: facts, decisions and ideas added per day, from core's `GET /v1/series?days=90` (counts per day, a day with none is left out). */
 function ovGrowth(){
   const b=document.getElementById('ovGrowth'); if(!b) return;
-  const f=OVD.gfacts, d=OVD.gdecs;
-  if(!f||!d){ if(OVERR.gfacts||OVERR.gdecs) put(b,...ovFail(OVERR.gfacts?'gfacts':'gdecs',OV_DOWN)); return; }
-  const fl=f.facts||[], dl=d.decisions||[], cut=(l,tot)=>(tot||0)>l.length;
-  if(!fl.length&&!dl.length){ put(b,empty('nothing remembered yet. Add a fact with:'),cmdBlock('hv remember "<fact>" --tags <tag>')); return; }
-  const day=r=>String(r.created||'').slice(0,10), first=l=>l.map(day).filter(Boolean).sort()[0];
-  const lim=[cut(fl,f.facts_total)?first(fl):null,cut(dl,d.decisions_total)?first(dl):null].filter(Boolean).sort();
-  const all=[first(fl),first(dl)].filter(Boolean).sort();
-  const days=ovDays(90), week=ovDays(7)[0];
-  let start=lim.length?lim[lim.length-1]:all[0]; if(start>week) start=week;
-  const win=days.filter(x=>x>=start), n=l=>{ const by={}; l.forEach(r=>{ const k=day(r); if(k) by[k]=(by[k]||0)+1; }); return win.map(x=>by[x]||0); };
-  const fp=n(fl), dp=n(dl), sum=a=>a.reduce((x,y)=>x+y,0), added=sum(fp)+sum(dp);
-  const cap=(cut(fl,f.facts_total)||cut(dl,d.decisions_total))?' (counted from the newest 200 facts and 200 decisions)':'';
-  put(b,html`<div class="wsum"><span class="big2">${fmtNum(added)}</span> added in the last ${win.length} days${cap}</div>
-    ${VIZ.line([{label:'Facts',points:fp},{label:'Decisions',points:dp}],Object.assign({area:true,label:'Facts and decisions added per day, last '+win.length+' days: '+fmtNum(sum(fp))+' facts, '+fmtNum(sum(dp))+' decisions'},ovAnim('growth')))}
-    <div class="legend"><span><i class="s1"></i>Facts ${fmtNum(sum(fp))}</span><span><i class="s2"></i>Decisions ${fmtNum(sum(dp))}</span></div>`);
+  const s=OVD.series;
+  if(!s){ if(OVERR.series) put(b,...ovFail('series',OV_DOWN)); return; }
+  const kinds=[['Facts',s.facts],['Decisions',s.decisions],['Ideas',s.ideas]].map(([label,l])=>{ const by={}; (Array.isArray(l)?l:[]).forEach(r=>{ if(r&&r.day) by[r.day]=Number(r.n)||0; }); return {label,by}; });
+  const days=ovDays(90), tot=k=>days.reduce((a,x)=>a+(k.by[x]||0),0), added=kinds.reduce((a,k)=>a+tot(k),0);
+  if(!added){ put(b,empty('nothing remembered in the last 90 days. Add a fact with:'),cmdBlock('hv remember "<fact>" --tags <tag>')); return; }
+  const first=days.find(x=>kinds.some(k=>k.by[x])), week=ovDays(7)[0], start=first>week?week:first, w=days.filter(x=>x>=start);
+  put(b,html`<div class="wsum"><span class="big2">${fmtNum(added)}</span> added in the last ${w.length} days</div>
+    ${VIZ.line(kinds.map(k=>({label:k.label,points:w.map(x=>k.by[x]||0)})),Object.assign({area:true,label:'Facts, decisions and ideas added per day, last '+w.length+' days: '+kinds.map(k=>fmtNum(tot(k))+' '+k.label.toLowerCase()).join(', ')},ovAnim('growth')))}
+    <div class="legend">${kinds.map((k,i)=>html`<span><i class=${'s'+(i+1)}></i>${k.label} ${fmtNum(tot(k))}</span>`)}</div>`);
 }
 
 /* Seat activity: sessions in the last 7 days by agent, from the newest 200 sessions on the hive (operator only). */
@@ -467,8 +460,7 @@ function ovFetch(){
   ld('verify','/api/verify',null,ovHero);
   ld('peers','/api/peers?probe=0',r=>r.peers,()=>{ ovHero(); ovFleet(); });
   ld('audit','/api/audit',null,ovAudit);
-  ld('gfacts','/api/search?kind=fact&sort=recency&limit=200',null,ovGrowth);
-  ld('gdecs','/api/search?kind=decision&sort=recency&limit=200',null,ovGrowth);
+  ld('series','/api/series?days=90',null,ovGrowth);
   if(!VIEWER){
     ld('tel','/api/telemetry?scope=hive&limit=200&sort=recent',null,()=>{ ovHero(); ovFleet(); ovSparks(); ovSeats(); ovSpend(); ovActivity(); });
     ld('modules','/api/modules',null,ovModules);

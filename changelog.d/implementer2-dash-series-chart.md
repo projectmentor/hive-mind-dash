@@ -1,0 +1,1 @@
+- The Overview "Corpus growth" widget now charts facts, decisions and ideas added per day over the last 90 days from the HiveMind service's `series` read (core 4.2), replacing the count taken from the newest 200 facts and decisions; viewers get it too, and hdash now needs core 4.2. (Part of #18.)
