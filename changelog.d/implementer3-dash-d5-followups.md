@@ -1,0 +1,1 @@
+- hdash 0.2 D5 follow-ups: tests pin the stale/offline purge-hint condition, the host-listed nesting guard and that a nested module row carries no purge hint; the README describes the Hive and Telemetry Devices / nested module identity layout.
