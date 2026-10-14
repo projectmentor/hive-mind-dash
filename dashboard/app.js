@@ -369,19 +369,22 @@ function ovApprovals(){
   put(b,empty('happrove (approving owner actions with a tap on your phone) is not installed. Install it with:'),cmdBlock('hive-mind module add happrove'));
 }
 
-/* One read per reachable device (through the request queue, at most OV_SPARK_CAP) returns that device's sessions per day. The Devices
-   sparklines (14 days) and the Activity chart (21 days) both draw from it, so the Activity chart adds no read. */
+/* The one hive read carries per-node `by_day` (core 3.x), so the Devices sparklines (14 days) and the Activity chart (21 days) need no
+   further read. A node entry without it comes from an older core: only those get one read each (through the request queue, at most OV_SPARK_CAP). */
 const OV_ACT_DAYS=21;
 const ovDays=n=>[...Array(n)].map((_,i)=>new Date(Date.now()-(n-1-i)*864e5).toISOString().slice(0,10));
+const ovBy=l=>{ const by={}; (l||[]).forEach(d=>{ by[d.day]=d.sessions; }); return by; };
 function ovSparks(){
   const t=OVD.tel; if(!t||VIEWER) return;
-  /* The daemon filters fnode by device NAME. Two devices that share a name would both get the merged series, so they get no read (and no sparkline) until the daemon filters by node id. */
-  const reach=(t.nodes||[]).filter(n=>n.reachable), count={}; reach.forEach(n=>{ count[n.node]=(count[n.node]||0)+1; });
-  OVD.sameName=reach.filter(n=>count[n.node]>1).length;
-  reach.filter(n=>count[n.node]===1).slice(0,OV_SPARK_CAP).forEach(n=>
+  const reach=(t.nodes||[]).filter(n=>n.reachable), have=reach.filter(n=>Array.isArray(n.by_day)), old=reach.filter(n=>!Array.isArray(n.by_day));
+  have.forEach(n=>{ (OVD.perDay=OVD.perDay||{})[n.node_id]={name:n.node,by:ovBy(n.by_day)}; });
+  if(have.length){ ovFleet(); ovActivity(); }
+  /* The fallback read filters by device NAME. Two devices that share a name would both get the merged series, so they get no read (and no sparkline) until the daemon is updated. */
+  const count={}; old.forEach(n=>{ count[n.node]=(count[n.node]||0)+1; });
+  OVD.sameName=old.filter(n=>count[n.node]>1).length;
+  old.filter(n=>count[n.node]===1).slice(0,OV_SPARK_CAP).forEach(n=>
     getJSON('/api/telemetry?scope=hive&fnode='+encodeURIComponent(n.node)+'&limit=1').then(r=>{
-      const by={}; (r.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
-      (OVD.perDay=OVD.perDay||{})[n.node_id]={name:n.node,by};
+      (OVD.perDay=OVD.perDay||{})[n.node_id]={name:n.node,by:ovBy(r.by_day)};
       ovFleet(); ovActivity();
     }).catch(()=>{}));
 }
