@@ -1,0 +1,1 @@
+- hdash 0.2: the corpus tag picker shows how many facts and decisions carry each tag, from `/api/tags?counts=1` (hive-mind#492); with an older core, which sends no `counts`, it shows names only. The viewer listener forwards `counts` on `/api/tags`.
