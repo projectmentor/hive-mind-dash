@@ -1078,22 +1078,93 @@ async function workspace(name){
     parts.push(html`<div class="panel"><h2>Claims and where to verify them</h2><table><thead><tr><th>Claim</th><th>Verify at</th></tr></thead><tbody>${w.claims.map(c=>html`<tr><td>${c.claim}</td><td>${cmdBlock(c.verify)}</td></tr>`)}</tbody></table></div>`);
     parts.push(html`<div class="panel"><h2>Modules: signature, publisher and health</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Version</th><th>Publisher</th><th>Signature</th><th>Trust</th><th>Health</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td>${m.version}</td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td>${m.trust}</td><td>${healthPill(m.doctor)}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
   }
-  if(name==='spend'){
-    parts.push(html`<div class="panel"><h2>Module quotas</h2>${w.quotas.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${w.quotas.map(q=>html`<tr><td><strong>${q.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(q,k)}</td>`)}<td class="mono">${cell(q.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`);
-  }
   if(name==='governance'){
     parts.push(html`<div class="panel"><h2>Core policy</h2>${w.policy.length?html`<table><thead><tr><th>Key</th><th>Value</th><th>Default</th><th>Set by</th></tr></thead><tbody>${w.policy.map(k=>html`<tr title=${cell(k.description)}><td class="mono">${k.id}${helpIcon(k.id,k.help)}</td><td>${cell(k.value)}</td><td class="c-dim">${cell(k.default)}</td><td class="c-dim">${cell(k.source)}</td></tr>`)}</tbody></table>`:empty(w.policy_note||'No core policy keys.')}</div>`);
     parts.push(html`<div class="panel"><h2>Who may write: admission, trust and signature per module</h2>${w.modules.length?html`<table><thead><tr><th>Module</th><th>Publisher</th><th>Signature</th><th>Device</th><th>Trust</th></tr></thead><tbody>${w.modules.map(m=>html`<tr class="link" onclick=${()=>{MP={name:m.name,tab:'overview'};state.view='modulePage';render();}}><td><strong>${m.name}</strong></td><td class="mono">${m.publisher}</td><td class=${m.signature==='valid'?'c-ok':'c-warn'}>${m.signature}</td><td class=${m.device==='admitted'?'c-ok':'c-warn'}>${m.device}</td><td>${m.trust}</td></tr>`)}</tbody></table>`:empty('No modules installed.')}</div>`);
   }
+  const story=name==='agents'||name==='spend';
+  if(story){ WSD={name,w,raw:null}; parts.push(html`<div id="wsstory">${VIZ.skeleton('bars')}</div>`); }
   parts.push(...w.panels.map(wsPanel));
   if(name==='agents'&&!w.panels.length) parts.push(empty('No installed module fills the Agents slot yet. hwatch does once it declares one.'));
   parts.push(...w.notes.map(n=>html`<div class="note">${n}</div>`));
+  if(story) parts.push(html`<div class="panel"><button class="btn" id="wsrawbtn" aria-pressed=${String(!!WRAW[name])} onclick=${()=>{ WRAW[name]=!WRAW[name]; wsRaw(); }}>${WRAW[name]?'Hide raw tables':'Raw: show tables'}</button></div><div id="wsraw"></div>`);
   put($('#wsbody'),...parts);
-  if(name==='agents'||name==='spend') agentsTelemetry();
+  if(name==='agents') agentsStory(); else if(name==='spend') spendStory();
 }
-async function agentsTelemetry(){
-  let t; try{ t=await getJSON('/api/telemetry'); }catch(e){ return; }
+/* The Agents and Spend storylines (hdash_overview_v2 §5): a question, a headline, charts in reading order, then Raw (off by default).
+   Both draw from hive-wide telemetry reads. The daemon returns at most the newest 21 days with sessions, so 21 calendar days is the
+   longest window that is complete and no chart is labelled longer. */
+let WRAW={agents:false,spend:false}, WSD={name:'',w:null,raw:null}, WSEEN={};
+const WS_DAYS=21, WS_WEEK=7, WS_AGENTS=8;
+const WS_CAP_NOTE='The HiveMind service reads at most the newest 2,000 sessions on each device, so a very busy period can show fewer than it had.'; // core api_telemetry_hive per_node_cap
+const wsRaw=()=>{
+  const on=!!WRAW[WSD.name], b=$('#wsrawbtn');
+  if(b){ b.setAttribute('aria-pressed',String(on)); b.textContent=on?'Hide raw tables':'Raw: show tables'; }
+  put($('#wsraw'),on&&WSD.raw?WSD.raw():null);
+};
+const modelRawTable=t=>{
   const models=Object.entries((t&&t.by_model)||{}).sort((a,b)=>(b[1].in+b[1].out)-(a[1].in+a[1].out)).slice(0,50);
-  const el=$('#wsbody'); if(!el||!models.length) return;
-  el.append(...toNodes(modelTable(models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'unpriced'}</td></tr>`))));
+  return models.length?modelTable(models.map(([m,v])=>html`<tr><td class="mono">${m}</td><td>${fmtNum(v.in)}</td><td>${fmtNum(v.out)}</td><td>${v.priced?fmtCost(v.cost):'unpriced'}</td></tr>`)):null;
+};
+const wsStory=(name,...nodes)=>{ if(WSD.name===name) put($('#wsstory'),...nodes); };
+const wsAnim=k=>({animate:!WSEEN[k]});
+
+async function agentsStory(){
+  let t; try{ t=await getJSON('/api/telemetry?scope=hive&limit=50&sort=recent'); }catch(e){ wsStory('agents',empty(failText(e,'telemetry unavailable'))); return; }
+  const rec=t.recent||[], at=r=>Date.parse(String(r.when||'')+'Z')||0;
+  const names=[]; rec.forEach(r=>{ if(r.agent&&!names.includes(r.agent)) names.push(r.agent); });
+  ((t.facets&&t.facets.agents)||[]).forEach(a=>{ if(!names.includes(a)) names.push(a); });
+  const shown=names.slice(0,WS_AGENTS);
+  if(!shown.length){ wsStory('agents',empty('no sessions recorded yet. Sessions appear here when an AI session runner (such as Claude Code) uses HiveMind.')); WSD.raw=()=>modelRawTable(t); wsRaw(); return; }
+  const days=ovDays(WS_DAYS), wk=days.slice(-WS_WEEK);
+  const rows=await Promise.all(shown.map(a=>getJSON('/api/telemetry?scope=hive&limit=1&sort=recent&fagent='+encodeURIComponent(a)).then(r=>{
+    const by={}; (r.by_day||[]).forEach(d=>{ by[d.day]=d.sessions; });
+    const w7=wk.reduce((x,k)=>x+(by[k]||0),0), w21=days.reduce((x,k)=>x+(by[k]||0),0);
+    return {agent:a,w7,rest:w21-w7,w21,last:r.recent&&r.recent[0]?at(r.recent[0]):0,ok:true};
+  }).catch(()=>({agent:a,w7:0,rest:0,w21:0,last:0,ok:false}))));
+  if(WSD.name!=='agents') return;
+  const good=rows.filter(r=>r.ok).sort((x,y)=>y.w21-x.w21||y.last-x.last), bad=rows.length-good.length;
+  const s7=good.reduce((x,r)=>x+r.w7,0), s21=good.reduce((x,r)=>x+r.w21,0), more=names.length-shown.length;
+  const idle=good.filter(r=>!r.w7).length;
+  const ageOf=r=>Math.max(0,Math.round((Date.now()-r.last)/1000));
+  const dayMs=864e5, strip=r=>{ const f=r.last?Math.max(0,Math.min(1,1-(Date.now()-r.last)/(WS_WEEK*dayMs))):0; return html`<div class="srow"><span class="sname mono" title=${r.agent}>${r.agent}</span>
+      <span class="strip" role="img" aria-label=${r.last?r.agent+': last session '+fmtAge(ageOf(r))+' ago':r.agent+': no session found'}><i class=${'sdot '+(r.last&&f>0?'s1':'old')} style=${{left:(r.last&&f>0?Math.round(f*100):0)+'%'}}></i></span>
+      <span class="c-dim fs12 sage">${r.last?(f>0?fmtAge(ageOf(r))+' ago':'over '+WS_WEEK+' days ago'):'no session found'}</span></div>`; };
+  const out=[html`<div class="panel"><div class="note">What are my agents doing, and is anything stuck?</div>
+    <div class="wsum"><span class="big2">${fmtNum(s7)}</span> sessions in the last ${WS_WEEK} days, ${fmtNum(s21)} in the last ${WS_DAYS} days, across ${good.length} agent${good.length===1?'':'s'}${idle?' · '+idle+' with no session this week':''}. An agent is one AI session runner, such as <span class="mono">claude-code:david@gregorius</span>.</div></div>`,
+    html`<div class="panel"><h2>Sessions by agent</h2>
+      ${good.length?html`${VIZ.bars(good.map(r=>({label:r.agent,parts:[r.w7,r.rest]})),Object.assign({stacked:true,label:'Sessions by agent, last '+WS_DAYS+' days: '+good.map(r=>r.agent+' '+r.w7+' in the last '+WS_WEEK+' days, '+r.w21+' in '+WS_DAYS).join('; ')},wsAnim('ag')))}
+        <div class="legend"><span><i class="s1"></i>last ${WS_WEEK} days</span><span><i class="s2"></i>the ${WS_DAYS-WS_WEEK} days before</span></div>
+        ${good.map((r,i)=>html`<div class="srow"><span class="sname mono" title=${r.agent}>${i+1}. ${r.agent}</span><span class="sn">${fmtNum(r.w21)}</span></div>`)}`:empty('could not read the sessions of any agent')}
+      ${bad?html`<div class="note">${bad} agent${bad===1?'':'s'} could not be read just now; try again in a moment.</div>`:null}
+      <div class="note">${WS_CAP_NOTE}</div>
+      ${more>0?html`<div class="note">Showing the ${shown.length} most recently active of ${names.length} agents.</div>`:null}</div>`,
+    html`<div class="panel"><h2>Last seen</h2><div class="wsum">Each dot is the agent's newest session on a ${WS_WEEK}-day line; the left end is ${WS_WEEK} days ago and the right end is now.</div>${good.map(strip)}</div>`];
+  ['ag'].forEach(k=>{ WSEEN[k]=1; });
+  WSD.raw=()=>[html`<div class="panel"><h2>By agent</h2><table><thead><tr><th>Agent</th><th>Last ${WS_WEEK} days</th><th>Last ${WS_DAYS} days</th><th>Newest session</th></tr></thead><tbody>${good.map(r=>html`<tr><td class="mono">${r.agent}</td><td>${fmtNum(r.w7)}</td><td>${fmtNum(r.w21)}</td><td>${r.last?new Date(r.last).toISOString().slice(0,19).replace('T',' '):'-'}</td></tr>`)}</tbody></table></div>`,modelRawTable(t)];
+  wsStory('agents',...out); wsRaw();
+}
+
+/* "0/h 0/d 0 total" is the core's own use line for a module on this device. */
+const quotaUse=s=>{ const m=/^(\d+)\/h (\d+)\/d (\d+) total$/.exec(String(s||'')); return m?{per_hour:+m[1],per_day:+m[2],lifetime:+m[3]}:null; };
+async function spendStory(){
+  let t; try{ t=await getJSON('/api/telemetry?scope=hive&limit=1'); }catch(e){ wsStory('spend',empty(failText(e,'telemetry unavailable'))); return; }
+  if(WSD.name!=='spend') return;
+  const T=t.totals||{}, models=Object.entries(t.by_model||{}), priced=models.filter(([,v])=>v.priced).sort((a,b)=>b[1].cost-a[1].cost).slice(0,8), unp=models.filter(([,v])=>!v.priced).map(([m])=>m);
+  const q=WSD.w.quotas||[];
+  const legend=rows=>html`<div class="legend">${rows.map(([label,n,i])=>html`<span><i class=${'s'+(i%6+1)}></i>${label} ${fmtCost(n)}</span>`)}</div>`;
+  const lim=(label,used,cap,k)=>html`<div class="lrow"><span class="lname">${label}</span>${cap?html`<span class="lbar">${VIZ.limits(used,cap,{label:label+': '+fmtNum(used)+' of '+fmtNum(cap)+' used',animate:!WSEEN[k]})}</span><span class="c-dim fs12 lnum">${fmtNum(used)} of ${fmtNum(cap)}</span>`:html`<span class="c-dim fs12">no writes allowed</span>`}</div>`;
+  const out=[html`<div class="panel"><div class="note">What is this costing, and what stops it running away?</div>
+    <div class="wsum"><span class="big2">${fmtCost(T.cost_usd)}</span> across all devices${unp.length?', models with a known price only':''} · ${fmtNum(T.tokens_out)} tokens out${unp.length?' · price unknown for '+unp.length+' model'+(unp.length===1?'':'s'):''}</div></div>`,
+    html`<div class="panel"><h2>Cost by model</h2>
+      ${priced.length?html`${VIZ.bars(priced.map(([m,v])=>({label:m,value:v.cost})),Object.assign({label:'Cost by model: '+priced.map(([m,v])=>m+' '+fmtCost(v.cost)).join(', ')},wsAnim('cost')))}${legend(priced.map(([m,v],i)=>[m,v.cost,i]))}`:empty('no session with a known price yet')}
+      ${unp.length?html`<div class="note">Price unknown, so not in the chart or the total: <span class="mono">${unp.join(', ')}</span>.</div>`:null}
+      <div class="note">${WS_CAP_NOTE}</div>
+      <div class="note">Cost per day is not reported by the HiveMind service yet, so there is no daily cost chart.</div></div>`,
+    html`<div class="panel"><h2>Write limits per module</h2>
+      ${q.length?html`${q.map(m=>{ const u=quotaUse(m.use); return html`<div class="lmod"><div class="fname">${m.module}</div>${u?html`${lim('per hour',u.per_hour,m.per_hour,'l'+m.module+'h')}${lim('per day',u.per_day,m.per_day,'l'+m.module+'d')}${lim('lifetime',u.lifetime,m.lifetime,'l'+m.module+'t')}`:html`<div class="c-dim fs12">use not reported: ${cell(m.use)}</div>`}</div>`; })}
+        <div class="note">A module's write limit caps how much it can add to the hive, so a stuck module cannot fill it. The bars show use on this device only; the bar turns amber at 70% and red at 90%.</div>`:empty('No modules installed.')}</div>`];
+  ['cost'].forEach(k=>{ WSEEN[k]=1; }); q.forEach(m=>['h','d','t'].forEach(x=>{ WSEEN['l'+m.module+x]=1; }));
+  WSD.raw=()=>[html`<div class="panel"><h2>Module quotas</h2>${q.length?html`<table><thead><tr><th>Module</th><th>Per hour</th><th>Per day</th><th>Entry bytes</th><th>Lifetime</th><th>Use (this device)</th></tr></thead><tbody>${q.map(m=>html`<tr><td><strong>${m.module}</strong></td>${['per_hour','per_day','entry_bytes','lifetime'].map(k=>html`<td>${quotaCell(m,k)}</td>`)}<td class="mono">${cell(m.use)}</td></tr>`)}</tbody></table><div class="note">Limits are the core's defaults lowered by the module's signed manifest. A raise by the owner is not shown here; see <code>hive-mind module quota NAME</code>.</div>`:empty('No modules installed.')}</div>`,modelRawTable(t)];
+  wsStory('spend',...out); wsRaw();
 }

@@ -304,3 +304,14 @@ tr.modrow td{background:var(--surface)} tr.modrow td.nest{padding-left:34px}
 .c-dim.sm{font-size:11px}
 
 .sparkx.ends{justify-content:space-between} .sparkx.ends > div{flex:none}
+/* Agents and Spend storylines */
+.strip{position:relative;flex:0 0 40%;height:8px;border-radius:4px;background:var(--grid);align-self:center}
+.sdot{position:absolute;top:-2px;width:12px;height:12px;margin-left:-6px;border-radius:50%;background:var(--s1)}
+.sdot.old{background:var(--muted);margin-left:0}
+.sage{min-width:96px;text-align:right}
+.lmod{padding:8px 0;border-bottom:1px solid var(--line-subtle)}
+.lmod:last-of-type{border-bottom:0}
+.lrow{display:flex;align-items:center;gap:12px;padding:2px 0}
+.lname{flex:0 0 72px;font-size:12px;color:var(--dim)}
+.lbar{flex:1;min-width:0}
+.lnum{flex:0 0 120px;text-align:right}
