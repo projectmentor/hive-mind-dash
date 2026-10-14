@@ -1,0 +1,1 @@
+- hdash corpus: a viewer who opens `#corpus/entities` now lands on Search, OR-mode decisions sort newest first under any sort, and the noise-tag test pins the 7-hex-digit minimum (hive-mind-dash#32).

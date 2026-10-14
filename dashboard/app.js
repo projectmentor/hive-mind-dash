@@ -220,8 +220,9 @@ async function openById(h){
 async function openHash(){
   const h=(location.hash||'').slice(1), m=/^corpus(?:\/([a-z-]+))?$/.exec(h);
   if(!m) return openById(h);
-  const sub=m[1]||'search'; if(!SUB_SET[sub]||(VIEWER&&sub==='entities')) return false;
-  state.node=null; state.detail=null; state.view='corpus'; applySub(sub); setNav('corpus'); render(); return true;
+  const sub=m[1]||'search'; if(!SUB_SET[sub]) return false;
+  const shown=VIEWER&&sub==='entities'?'search':sub;   // a viewer has no Entities: land on Search, not on the default view
+  state.node=null; state.detail=null; state.view='corpus'; applySub(shown); setNav('corpus'); if(shown!==sub) setHash(''); render(); return true;
 }
 window.addEventListener('hashchange',()=>{ openHash(); });
 const kv=(k,v)=>html`<div class="kv"><div class="k">${k}</div><div class="v">${v}</div></div>`;
@@ -555,7 +556,8 @@ async function scanOr(kind){   // one search per selected tag (at most OR_MAX), 
   const got=await Promise.all(tags.map(t=>getJSON('/api/search?'+new URLSearchParams({q:C.q,kind,sort:C.sort,status:C.status,limit:String(SCAN_PER),offset:'0',tag:t}))));
   got.forEach(s=>{ const rs=s[f]||[]; if((s[f+'_total']||rs.length)>rs.length) capped=true; rs.forEach(r=>{ const k=r.sid||r.ref||r.id; if(!seen.has(k)) seen.set(k,r); }); });
   const rows=[...seen.values()];
-  rows.sort(C.sort==='recency'?(a,b)=>String(b.created).localeCompare(String(a.created)):(a,b)=>(b[C.sort]||0)-(a[C.sort]||0));
+  const newest=(a,b)=>String(b.created).localeCompare(String(a.created));   // decisions carry no confidence/importance/utility: newest first
+  rows.sort(C.sort==='recency'?newest:(a,b)=>(b[C.sort]||0)-(a[C.sort]||0)||newest(a,b));
   return C.scan[kind]={key,rows,capped};
 }
 const cappedNote=kind=>{const h=C.scan[kind]; if(C.tags.length<2||!h) return null;
