@@ -880,7 +880,7 @@ VIEWER_SIGNATURE = {"listener": "viewer"}     # in every refusal; `share` and do
 VIEWER_PAGES = ("/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/app.js", "/app.css", "/viz.js")
 VIEWER_RECORDS_PATH = "/api/config/records"
 VIEWER_ROUTES = {        # route -> the query parameters it takes; anything else (`node` above all) is a 403
-    "overview": (), "tags": (), "audit": (), "verify": (), "peers": (),
+    "overview": (), "tags": ("counts",), "audit": (), "verify": (), "peers": (),
     "search": ("q", "tag", "kind", "min_confidence", "limit", "offset", "sort", "status"),
     "related": ("kind", "id"), "item": ("sid",),
 }

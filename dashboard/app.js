@@ -522,7 +522,7 @@ const SUBS=[['search','Search'],['latest-facts','Latest facts'],['latest-decisio
 const SUB_SET={search:{kind:'all',sort:'confidence'},'latest-facts':{kind:'fact',sort:'recency'},'latest-decisions':{kind:'decision',sort:'recency'},ideas:{kind:'idea',sort:'recency'},entities:{}};
 const subList=()=>SUBS.filter(s=>!(VIEWER&&s[0]==='entities'));
 const KIND_KEY={fact:'facts',decision:'decisions',idea:'ideas'}, KIND_LABEL={fact:'Facts',decision:'Decisions',idea:'Ideas'}, KIND_PANEL={fact:'fpanel',decision:'dpanel',idea:'ipanel'};
-let C={q:'',sub:'search',kind:'all',tags:[],mode:'and',sort:'confidence',status:'all',pg:{fact:1,decision:1,idea:1},res:{fact:{rows:[],total:0},decision:{rows:[],total:0},idea:{rows:[],total:0}},tagList:null,showAll:false,verOpen:false,scan:{}};
+let C={q:'',sub:'search',kind:'all',tags:[],mode:'and',sort:'confidence',status:'all',pg:{fact:1,decision:1,idea:1},res:{fact:{rows:[],total:0},decision:{rows:[],total:0},idea:{rows:[],total:0}},tagList:null,tagCounts:null,showAll:false,verOpen:false,scan:{}};
 const pg1=()=>{C.pg={fact:1,decision:1,idea:1};};
 const kindsShown=()=>C.sub==='ideas'?['idea']:C.kind==='all'?['fact','decision']:[C.kind];
 const restHash=()=>state.view==='corpus'&&!state.node&&C.sub!=='search'?'#corpus/'+C.sub:'';
@@ -531,6 +531,7 @@ function applySub(s){ C.sub=s; Object.assign(C,SUB_SET[s]); C.status='all'; pg1(
    AND asks for the first tag and keeps the rows that carry the rest (up to SCAN_PAGES pages of SCAN_PER; past that the list says it
    stopped), and OR asks once per tag, at most OR_MAX tags, and merges the rows. The viewer listener refuses a repeated `tag`, and both paths send one. */
 const NOISE_TAG=/^\d+$|^(?=.*\d)[0-9a-f]{7,}$/, VER_TAG=/^\d+\.[\dx.]+/, TAG_SHOW=150, SCAN_PER=200, SCAN_PAGES=5, OR_MAX=8;
+const tagCount=t=>C.tagCounts&&Number.isInteger(C.tagCounts[t])?C.tagCounts[t]:null;   // absent on an older core: the picker shows names only
 function tagPickFill(){
   const q=(($('#tagq')||{}).value||'').trim().toLowerCase(), all=C.tagList||[], sel=C.tags;
   const isNoise=t=>NOISE_TAG.test(t), isVer=t=>!isNoise(t)&&VER_TAG.test(t);
@@ -538,7 +539,7 @@ function tagPickFill(){
   const rest=all.filter(t=>!sel.includes(t)&&t.toLowerCase().includes(q)&&!(hideNoise&&isNoise(t)));
   const vers=hideNoise?rest.filter(isVer):[], plain=hideNoise?rest.filter(t=>!isVer(t)):rest, shown=sel.concat(plain);
   const hidden=all.filter(isNoise).length, join=C.mode==='or'?' or ':' + ';
-  const opt=t=>html`<label class="tagopt"><input type="checkbox" checked=${sel.includes(t)} onchange=${e=>toggleTag(t,e.target.checked)}> ${t}</label>`;
+  const opt=t=>html`<label class="tagopt"><input type="checkbox" checked=${sel.includes(t)} onchange=${e=>toggleTag(t,e.target.checked)}> ${t}${tagCount(t)==null?null:html` <span class="c-dim fs12">${tagCount(t)}</span>`}</label>`;
   put($('#tagsum'),sel.length?'Tags: '+(sel.length>2?sel.length+' selected':sel.join(join)):'All tags');
   put($('#taglist'),shown.slice(0,TAG_SHOW).map(opt),
     vers.length?html`<details class="tagver" open=${C.verOpen} ontoggle=${e=>{C.verOpen=e.target.open;}}><summary>versions (${vers.length})</summary>${vers.slice(0,TAG_SHOW).map(opt)}</details>`:null,
@@ -597,7 +598,7 @@ function corpus(){
    </div><div id="tagchips" class="tagchips"></div><div id="results">${spin()}</div>`);
   ['kind','sort','status'].forEach(id=>{ const e=$('#'+id); if(e) e.value=C[id]; });
   tagPickFill(); $('#tagq').oninput=tagPickFill; $('#tagclear').onclick=()=>{C.tags=[];pg1();tagPickFill();loadCorpus();};
-  if(!C.tagList) getJSON('/api/tags').then(r=>{C.tagList=r.tags||[];tagPickFill();}).catch(()=>{});   // kept across visits: the picker is rebuilt each time the page opens
+  if(!C.tagList) getJSON('/api/tags?counts=1').then(r=>{C.tagList=r.tags||[];C.tagCounts=r.counts&&typeof r.counts==='object'?r.counts:null;tagPickFill();}).catch(()=>{});   // kept across visits: the picker is rebuilt each time the page opens
   let timer; const reload=()=>{C.q=$('#q').value; const id=C.q.trim(); if(ID_RE.test(id)){ openById(id).then(ok=>{ if(!ok) reload2(); }); return; } reload2(); };
   const reload2=()=>{ ['kind','sort','status'].forEach(k=>{ const e=$('#'+k); if(e) C[k]=e.value; }); pg1(); loadCorpus(); };
   $('#q').oninput=()=>{clearTimeout(timer);timer=setTimeout(reload,200);};

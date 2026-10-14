@@ -52,3 +52,17 @@ def test_followups_behaviour_under_node():
         pytest.skip("node is not installed")
     r = subprocess.run([node, str(root / "corpus_followups.js"), str(root.parent / "dashboard" / "app.js")], capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and r.stdout.startswith("ok"), r.stderr + r.stdout
+
+
+def test_tag_counts_shown_with_fallback():
+    """hive-mind-dash#18 gap 5: the picker asks /api/tags?counts=1, shows a count when the core sends one, and nothing otherwise."""
+    import os, shutil, subprocess, pytest
+    assert "/api/tags?counts=1" in CORPUS and "tagCount(t)" in CORPUS
+    root = Path(__file__).resolve().parent
+    node = shutil.which("node") or next((str(c) for c in sorted((Path.home() / ".nvm" / "versions" / "node").glob("v*/bin/node"), reverse=True) if c.is_file()), None)
+    if node is None:
+        if os.environ.get("CI"):
+            pytest.fail("node is required in CI")
+        pytest.skip("node is not installed")
+    r = subprocess.run([node, str(root / "tag_counts.js"), str(root.parent / "dashboard" / "app.js")], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.startswith("ok"), r.stderr + r.stdout

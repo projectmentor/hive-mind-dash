@@ -24,7 +24,7 @@ _loader.exec_module(hdash)
 
 LOGIN = "alice@example.com"
 SUBSET = ["/", "/index.html", "/dashboard", "/dashboard/", "/logo.svg", "/favicon.svg", "/api/overview", "/api/search?q=x&limit=5",
-          "/api/tags", "/api/related?kind=fact&id=1", "/api/item?sid=h:abc", "/api/audit", "/api/peers?probe=0",
+          "/api/tags", "/api/tags?counts=1", "/api/related?kind=fact&id=1", "/api/item?sid=h:abc", "/api/audit", "/api/peers?probe=0",
           "/api/config/records", "/api/verify"]
 REFUSED = ["/api/telemetry", "/api/status", "/api/daemon", "/api/entities", "/api/modules", "/api/module?name=x", "/api/workspace?name=agents",
            "/api/settings", "/api/csrf", "/api/overview?node=abc", "/api/overview?Node=abc", "/api/overview?node=",
