@@ -29,6 +29,7 @@
   "LICENSE": "83f60adac17c1b2f689fa5213069b48ab1df40fe4cbb98fd2d91d833d8a72098",
   "README.md": "239ba54930313eaf5037ba8d8154af0175c4177814addd15a9083027f40eedc3",
   "changelog.d/feat-hdash-extraction.md": "34dde2aec2f767831726524b07223db7e6aa4be2fc5e011b2bae8a791692e501",
+  "changelog.d/fix-hdash-entrypoint-50.md": "3c92c316525537f1af9bf20b5b6dae6b21334db7dd51dd3b77f3c7729548dc92",
   "changelog.d/implementer-hdash-config-forms.md": "bada5d11632fe4b734c3d9657808186eebb90619616ae72c64d5ff20126502c4",
   "changelog.d/implementer-hdash-viewer.md": "b672443b365c85ff05848188a2934271927dcbc85c458e6ee677feaffdf6ca77",
   "changelog.d/implementer2-dash-by-day-cost.md": "3c018044213924228d1e61d94712fb86868a6f2394d1eea1f2b7514459c5931b",
