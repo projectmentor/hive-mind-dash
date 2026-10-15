@@ -1,8 +1,6 @@
 {
  "cli": {
   "command": [
-   "python3",
-   "-I",
    "hdash"
   ],
   "name": "hdash"
