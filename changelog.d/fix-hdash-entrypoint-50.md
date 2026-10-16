@@ -1,0 +1,1 @@
+- The `hdash` launcher works from any directory: the manifest's `cli.command` is now the executable `hdash` itself (resolved to its absolute path by the core launcher), not `python3 -I hdash` relative to the caller's directory. (Closes #50)
